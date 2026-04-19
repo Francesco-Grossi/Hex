@@ -45,6 +45,8 @@ var _terrain_buttons: Dictionary = {}
 
 # ── Battle ───────────────────────────────────────────────────────────
 var _battle: BattleManager = null
+var _player_placements: Array = []
+var _enemy_placements:  Array = []
 
 # ── Pan ──────────────────────────────────────────────────────────────
 var _panning:    bool    = false
@@ -116,11 +118,12 @@ func _build_ui() -> void:
 	ps.set_expand_margin_all(0)
 	panel.add_theme_stylebox_override("panel", ps)
 	canvas.add_child(panel)
-
+	panel.mouse_filter = Control.MOUSE_FILTER_PASS
+	
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 4)
 	panel.add_child(vbox)
-
+	
 	# ── Row 1 ────────────────────────────────────────────────────────
 	var row1 := HBoxContainer.new()
 	row1.add_theme_constant_override("separation", 6)
@@ -250,9 +253,154 @@ func _apply_default_map() -> void:
 
 func _on_toggle_battle() -> void:
 	if _app_mode == AppMode.EDIT:
-		_enter_battle()
+		_show_battle_setup()
 	else:
 		_exit_battle()
+
+
+func _show_battle_setup() -> void:
+	# Find the CanvasLayer we created in _build_ui
+	var canvas: CanvasLayer = null
+	for child in get_children():
+		if child is CanvasLayer:
+			canvas = child
+			break
+	if canvas == null:
+		_enter_battle()
+		return
+
+	var overlay := ColorRect.new()
+	overlay.name = "BattleSetupOverlay"
+	overlay.color = Color(0, 0, 0, 0.70)
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	canvas.add_child(overlay)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical   = Control.GROW_DIRECTION_BOTH
+	var ps := StyleBoxFlat.new()
+	ps.bg_color = Color(0.10, 0.10, 0.14)
+	ps.set_border_width_all(1)
+	ps.border_color = Color(0.35, 0.35, 0.50)
+	ps.set_corner_radius_all(8)
+	ps.set_expand_margin_all(20)
+	panel.add_theme_stylebox_override("panel", ps)
+	overlay.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	vbox.custom_minimum_size = Vector2(480, 0)
+	panel.add_child(vbox)
+
+	var title := Label.new()
+	title.text = "⚔  Battle Setup"
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_color_override("font_color", Color(0.9, 0.75, 0.25))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(title)
+
+	vbox.add_child(HSeparator.new())
+
+	var p_enums := [UnitData.Type.KNIGHT, UnitData.Type.ARCHER, UnitData.Type.MAGE]
+	var e_enums := [UnitData.Type.ORC,    UnitData.Type.GOBLIN,  UnitData.Type.TROLL]
+	var p_names := ["Knight", "Archer", "Mage"]
+	var e_names := ["Orc", "Goblin", "Troll"]
+	var p_defaults: Array = [Vector2i(1,4), Vector2i(1,6), Vector2i(2,5)]
+	var e_defaults: Array = [Vector2i(16,3), Vector2i(15,5), Vector2i(16,7)]
+
+	var player_rows: Array = []
+	var enemy_rows:  Array = []
+
+	for faction_idx in range(2):
+		var is_player: bool = faction_idx == 0
+		var header := Label.new()
+		header.text = "── %s ──" % ("Player Units" if is_player else "Enemy Units")
+		header.add_theme_color_override("font_color",
+			Color(0.4, 0.6, 1.0) if is_player else Color(1.0, 0.4, 0.4))
+		header.add_theme_font_size_override("font_size", 13)
+		vbox.add_child(header)
+
+		var names   := p_names    if is_player else e_names
+		var defaults := p_defaults if is_player else e_defaults
+		var rows_ref := player_rows if is_player else enemy_rows
+
+		for i in range(3):
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 6)
+			vbox.add_child(row)
+
+			var chk := CheckBox.new()
+			chk.button_pressed = true
+			row.add_child(chk)
+
+			var opt := OptionButton.new()
+			opt.custom_minimum_size = Vector2(100, 0)
+			for n in names:
+				opt.add_item(n)
+			opt.selected = i
+			row.add_child(opt)
+
+			var ql := Label.new()
+			ql.text = "  Q:"
+			ql.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+			row.add_child(ql)
+
+			var q_spin := SpinBox.new()
+			q_spin.min_value = 0
+			q_spin.max_value = COLS - 1
+			q_spin.value = defaults[i].x
+			q_spin.custom_minimum_size = Vector2(65, 0)
+			row.add_child(q_spin)
+
+			var rl := Label.new()
+			rl.text = "  R:"
+			rl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+			row.add_child(rl)
+
+			var r_spin := SpinBox.new()
+			r_spin.min_value = 0
+			r_spin.max_value = ROWS - 1
+			r_spin.value = defaults[i].y
+			r_spin.custom_minimum_size = Vector2(65, 0)
+			row.add_child(r_spin)
+
+			rows_ref.append({"chk": chk, "opt": opt, "q": q_spin, "r": r_spin})
+
+	vbox.add_child(HSeparator.new())
+
+	var btn_row := HBoxContainer.new()
+	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	btn_row.add_theme_constant_override("separation", 16)
+	vbox.add_child(btn_row)
+
+	var cancel_btn := _make_btn("Cancel")
+	cancel_btn.custom_minimum_size = Vector2(110, 36)
+	cancel_btn.pressed.connect(func() -> void: overlay.queue_free())
+	btn_row.add_child(cancel_btn)
+
+	var start_btn := _make_btn("▶  Start Battle")
+	start_btn.custom_minimum_size = Vector2(150, 36)
+	_tint_btn(start_btn, Color(0.10, 0.40, 0.10))
+	start_btn.pressed.connect(func() -> void:
+		_player_placements.clear()
+		_enemy_placements.clear()
+		for row in player_rows:
+			if row["chk"].button_pressed:
+				_player_placements.append([
+					p_enums[row["opt"].selected],
+					Vector2i(int(row["q"].value), int(row["r"].value))
+				])
+		for row in enemy_rows:
+			if row["chk"].button_pressed:
+				_enemy_placements.append([
+					e_enums[row["opt"].selected],
+					Vector2i(int(row["q"].value), int(row["r"].value))
+				])
+		overlay.queue_free()
+		_enter_battle()
+	)
+	btn_row.add_child(start_btn)
 
 
 func _enter_battle() -> void:
@@ -269,7 +417,7 @@ func _enter_battle() -> void:
 		func(t: String) -> void: _status_label.text = t)
 	_battle.phase_changed.connect(_on_phase_changed)
 	add_child(_battle)
-	_battle.start_battle()
+	_battle.start_battle(_player_placements, _enemy_placements)
 
 
 func _exit_battle() -> void:
@@ -314,7 +462,7 @@ func _on_phase_changed(p: BattleManager.Phase) -> void:
 # Input
 # ════════════════════════════════════════════════════════════════════
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event
 		if mb.pressed:
@@ -344,6 +492,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _handle_click(screen_pos: Vector2) -> void:
+	# Don't paint if the click is inside the UI panel
+	for child in get_children():
+		if child is CanvasLayer:
+			for ctrl in child.get_children():
+				if ctrl is Control and ctrl.get_rect().has_point(screen_pos):
+					return
 	var hex := _screen_to_hex(screen_pos)
 
 	if _app_mode == AppMode.BATTLE:
@@ -377,11 +531,13 @@ func _update_hover(screen_pos: Vector2) -> void:
 
 
 func _screen_to_hex(screen_pos: Vector2) -> Vector2i:
-	# Use the camera's own transform to convert screen → world.
-	# This is the most reliable approach across all Godot 4.x versions.
+	# Convert screen position to world position manually using camera state.
+	# get_canvas_transform() is unreliable when Camera2D is a child of Node2D,
+	# because the Node2D's own transform is baked in. We reconstruct it directly:
+	#   world = camera_position + (screen_offset_from_center / zoom)
 	var vp_size := get_viewport().get_visible_rect().size
-	var world := _camera.global_position + \
-		(screen_pos - vp_size * 0.5) / _camera.zoom
+	var screen_center := vp_size * 0.5
+	var world := _camera.global_position + (screen_pos - screen_center) / _camera.zoom
 	return HexGrid.world_to_axial(world, HEX_SIZE)
 
 
@@ -471,7 +627,7 @@ func _update_status() -> void:
 	match _edit_mode:
 		EditMode.PAINT:
 			_status_label.text = "Paint — %s  |  RMB+drag=pan  |  Scroll=zoom" % \
-				TerrainData.get_name(_active_terrain)
+				TerrainData.get_terrain_name(_active_terrain)
 		EditMode.MOVE_PREVIEW:
 			_status_label.text = "Move preview — click yellow hex to move marker"
 

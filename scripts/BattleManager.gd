@@ -53,9 +53,21 @@ func setup(p_tiles: Dictionary, p_terrain: Dictionary,
 	status_label = p_status
 
 
-func start_battle() -> void:
-	_spawn_player_units()
-	_spawn_enemy_units()
+func start_battle(player_placements: Array = [], enemy_placements: Array = []) -> void:
+	if player_placements.is_empty():
+		_spawn_player_units()
+	else:
+		for entry in player_placements:
+			var u: BaseUnit = _make_unit(entry[0], entry[1])
+			player_units.append(u)
+			all_units.append(u)
+	if enemy_placements.is_empty():
+		_spawn_enemy_units()
+	else:
+		for entry in enemy_placements:
+			var u: BaseUnit = _make_unit(entry[0], entry[1])
+			enemy_units.append(u)
+			all_units.append(u)
 	_begin_player_phase()
 
 

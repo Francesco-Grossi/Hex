@@ -80,5 +80,5 @@ static func is_passable(type: Type) -> bool:
 static func get_color(type: Type) -> Color:
 	return TERRAINS[type]["color"]
 
-static func get_name(type: Type) -> String:
+static func get_terrain_name(type: Type) -> String:
 	return TERRAINS[type]["name"]
