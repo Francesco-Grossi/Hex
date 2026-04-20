@@ -1,22 +1,37 @@
 class_name HexGrid
 
-## The 6 axial direction vectors (pointy-top)
+## HexGrid.gd (Updated for Flat-Top)
+
+# Directions for Flat-top axial neighbors
 const DIRECTIONS: Array[Vector2i] = [
-	Vector2i(1, 0), Vector2i(1, -1), Vector2i(0, -1),
-	Vector2i(-1, 0), Vector2i(-1, 1), Vector2i(0, 1)
+	Vector2i(1, 0), Vector2i(0, -1), Vector2i(-1, -1),
+	Vector2i(-1, 0), Vector2i(0, 1), Vector2i(1, 1)
 ]
 
-## Convert axial hex coord → world pixel position
+## Convert axial hex coord → world pixel position (Flat-top math)
 static func axial_to_world(hex: Vector2i, hex_size: float) -> Vector2:
-	var x: float = hex_size * (sqrt(3.0) * hex.x + sqrt(3.0) / 2.0 * hex.y)
-	var y: float = hex_size * (3.0 / 2.0 * hex.y)
+	var x: float = hex_size * (3.0 / 2.0 * hex.x)
+	var y: float = hex_size * (sqrt(3.0) / 2.0 * hex.x + sqrt(3.0) * hex.y)
 	return Vector2(x, y)
 
-## Convert world pixel position → axial hex coord (rounded)
+## Convert world pixel position → axial hex coord (Flat-top math)
 static func world_to_axial(world: Vector2, hex_size: float) -> Vector2i:
-	var q_frac: float = (sqrt(3.0) / 3.0 * world.x - 1.0 / 3.0 * world.y) / hex_size
-	var r_frac: float = (2.0 / 3.0 * world.y) / hex_size
+	var q_frac: float = (2.0 / 3.0 * world.x) / hex_size
+	var r_frac: float = (-1.0 / 3.0 * world.x + sqrt(3.0) / 3.0 * world.y) / hex_size
 	return _axial_round(q_frac, r_frac)
+
+## Generate corners for a Flat-top hex (Starts at 0 degrees)
+static func hex_corners(hex_size: float) -> PackedVector2Array:
+	var corners = PackedVector2Array()
+	for i in range(6):
+		var angle_deg = 60 * i
+		var angle_rad = deg_to_rad(angle_deg)
+		corners.append(Vector2(
+			hex_size * cos(angle_rad),
+			hex_size * sin(angle_rad)
+		))
+	return corners
+
 
 static func _axial_round(q_frac: float, r_frac: float) -> Vector2i:
 	var s_frac: float = -q_frac - r_frac
@@ -116,11 +131,3 @@ static func ring(center: Vector2i, radius: int) -> Array[Vector2i]:
 			results.append(hex)
 			hex = hex + DIRECTIONS[i]
 	return results
-
-## Get the polygon points for drawing
-static func hex_corners(size: float) -> PackedVector2Array:
-	var c := PackedVector2Array()
-	for i in range(6):
-		var r = deg_to_rad(60 * i - 30)
-		c.append(Vector2(size * cos(r), size * sin(r)))
-	return c

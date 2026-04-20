@@ -38,30 +38,58 @@ enum Overlay {
 # ─────────────────────────────────────────────────────────────────────
 # Base terrain data
 # ─────────────────────────────────────────────────────────────────────
+
 const BASE_DATA: Dictionary = {
 	Base.FLAT: {
 		"name":      "Flat",
 		"color":     Color(0.25, 0.55, 0.12),
-		"symbol":    "",
-		"move_cost": 1,
+		"texture":   preload("res://assets/tile/grass/grass.png"),
+		"move_cost": 1
 	},
 	Base.HILLY: {
 		"name":      "Hilly",
-		"color":     Color(0.45, 0.60, 0.20),
-		"symbol":    "~",
-		"move_cost": 2,
+		"color":     Color(0.4, 0.5, 0.3),
+		"texture":   preload("res://assets/tile/hill/hill.png"),
+		"move_cost": 2
 	},
 	Base.MOUNTAIN: {
 		"name":      "Mountain",
 		"color":     Color(0.40, 0.32, 0.26),
-		"symbol":    "▲",
+		"texture":   preload("res://assets/tile/mountain/mountain.png"),
 		"move_cost": 99,
 	},
 	Base.WATER: {
 		"name":      "Water",
 		"color":     Color(0.10, 0.35, 0.70),
-		"symbol":    "≈",
+		"texture":   preload("res://assets/tile/water/water.png"),
 		"move_cost": 99,
+	},
+	
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Overlay data
+# ─────────────────────────────────────────────────────────────────────
+const OVERLAY_DATA: Dictionary = {
+	Overlay.NONE: {
+		"name":          "None",
+		"texture":       null, # No sprite for empty overlay
+		"move_cost":     0
+	},
+	Overlay.FOREST: {
+		"name":          "Forest",
+		"texture":       preload("res://assets/tile/forest/forest.png"), # ADD THIS
+		"move_cost":     2
+	},
+	Overlay.BUILDING: {
+		"name":          "Building",
+		"texture":       preload("res://assets/tile/building/building.png"),
+		"move_cost":     99
+	},
+	Overlay.WALL: {
+		"name":          "Wall",
+		"texture":       preload("res://assets/tile/wall/wall.png"),
+		"move_cost":     99
 	},
 }
 
@@ -72,32 +100,6 @@ const BASE_DATA: Dictionary = {
 ##   The cell uses max(base, overlay) so the worse layer always wins.
 ## visual_height: pixels above tile centre the sprite extends upward,
 ##   used only for z_index sorting (no pixel offset applied to geometry).
-const OVERLAY_DATA: Dictionary = {
-	Overlay.NONE: {
-		"name":          "None",
-		"symbol":        "",
-		"move_cost":     1,
-		"visual_height": 0,
-	},
-	Overlay.FOREST: {
-		"name":          "Forest",
-		"symbol":        "♣",
-		"move_cost":     2,
-		"visual_height": 40,
-	},
-	Overlay.BUILDING: {
-		"name":          "Building",
-		"symbol":        "⌂",
-		"move_cost":     99,
-		"visual_height": 60,
-	},
-	Overlay.WALL: {
-		"name":          "Wall",
-		"symbol":        "█",
-		"move_cost":     99,
-		"visual_height": 50,
-	},
-}
 
 # ─────────────────────────────────────────────────────────────────────
 # HexCell — value object stored per tile
@@ -121,10 +123,6 @@ class HexCell:
 	## True when the cell can be entered at all.
 	func is_passable() -> bool:
 		return move_cost() < 99
-
-	## Z-sort bias — only overlay height matters (no isometric elevation).
-	func z_bias() -> int:
-		return TerrainData.OVERLAY_DATA[overlay]["visual_height"]
 
 	func duplicate() -> HexCell:
 		return HexCell.new(base, overlay)

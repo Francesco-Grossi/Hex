@@ -16,7 +16,7 @@ extends Node2D
 
 const COLS:     int   = 18
 const ROWS:     int   = 11
-const HEX_SIZE: float = 44.0
+const HEX_SIZE: float = 72
 
 # ── App / edit modes ─────────────────────────────────────────────────
 enum AppMode  { EDIT, BATTLE }
