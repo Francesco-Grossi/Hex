@@ -131,3 +131,48 @@ static func ring(center: Vector2i, radius: int) -> Array[Vector2i]:
 			results.append(hex)
 			hex = hex + DIRECTIONS[i]
 	return results
+
+
+## hex_line — returns the ordered list of hex coordinates that a straight
+## line from `a` to `b` passes through, INCLUSIVE of both endpoints.
+##
+## Uses linear interpolation in cube coordinates with a tiny nudge to
+## avoid landing exactly on hex edges (which causes ambiguity).
+## The result is always length == distance(a, b) + 1.
+static func hex_line(a: Vector2i, b: Vector2i) -> Array[Vector2i]:
+	var n: int = distance(a, b)
+	if n == 0:
+		return [a]
+
+	var result: Array[Vector2i] = []
+	# Cube coords
+	var ax: float = a.x;  var ay: float = a.y;  var az: float = -a.x - a.y
+	var bx: float = b.x;  var by: float = b.y;  var bz: float = -b.x - b.y
+
+	# Tiny nudge pushes points off hex boundaries consistently
+	const NUDGE: float = 1e-6
+	ax += NUDGE; ay += NUDGE; az = -ax - ay
+	bx -= NUDGE; by -= NUDGE; bz = -bx - by
+
+	for i in range(n + 1):
+		var t: float = float(i) / float(n)
+		var lx: float = ax + (bx - ax) * t
+		var ly: float = ay + (by - ay) * t
+		result.append(_cube_round(lx, ly))
+	return result
+
+
+## Round fractional cube coordinates to the nearest hex.
+static func _cube_round(fx: float, fy: float) -> Vector2i:
+	var fz: float = -fx - fy
+	var rx: int   = roundi(fx)
+	var ry: int   = roundi(fy)
+	var rz: int   = roundi(fz)
+	var dx: float = absf(rx - fx)
+	var dy: float = absf(ry - fy)
+	var dz: float = absf(rz - fz)
+	if dx > dy and dx > dz:
+		rx = -ry - rz
+	elif dy > dz:
+		ry = -rx - rz
+	return Vector2i(rx, ry)

@@ -52,6 +52,7 @@ var _turn_btn:        Button
 var _battle_btn:      Button
 var _exit_battle_btn: Button
 var _edit_panel:      VBoxContainer
+var _inspect_panel:  UnitInspectPanel
 
 var _base_buttons:    Dictionary = {}
 var _overlay_buttons: Dictionary = {}
@@ -271,7 +272,20 @@ func _build_ui() -> void:
 	row4.add_child(hint)
 
 	_refresh_buttons()
+	_build_inspect_panel()
 
+func _build_inspect_panel() -> void:
+	# Find the CanvasLayer we created in _build_ui (layer = 10)
+	var canvas: CanvasLayer = null
+	for child in get_children():
+		if child is CanvasLayer and child.layer == 10:
+			canvas = child
+			break
+	if canvas == null:
+		return
+ 
+	_inspect_panel = UnitInspectPanel.new()
+	canvas.add_child(_inspect_panel)
 
 # ════════════════════════════════════════════════════════════════════
 # Grid
@@ -358,7 +372,7 @@ func _enter_battle() -> void:
 	_battle.battle_ended.connect(_on_battle_ended)
 	_battle.phase_changed.connect(_on_phase_changed)
 	_battle.start_battle(player_list, enemy_list)
-
+	_wire_battle_unit_inspect()
 
 func _exit_battle() -> void:
 	_app_mode = AppMode.EDIT
@@ -373,6 +387,8 @@ func _exit_battle() -> void:
 		_battle = null
 	for child in _unit_layer.get_children():
 		child.queue_free()
+	if _inspect_panel != null:
+		_inspect_panel.hide_panel() 
 	_update_status()
 
 
@@ -397,6 +413,35 @@ func _on_phase_changed(p: BattleManager.Phase) -> void:
 		BattleManager.Phase.DEFEAT:
 			_turn_btn.text = "💀 Defeat";  _turn_btn.disabled = true
 
+## Connect inspect_requested on every unit the BattleManager spawned.
+## Called right after start_battle() so all_units is populated.
+func _on_unit_inspect(unit: BaseUnit) -> void:
+	if _inspect_panel == null:
+		return
+	_inspect_panel.show_unit(unit)
+	
+func _wire_battle_unit_inspect() -> void:
+	if _battle == null:
+		return
+	for u in _battle.all_units:
+		if not u.inspect_requested.is_connected(_on_unit_inspect):
+			u.inspect_requested.connect(_on_unit_inspect)
+			# Refresh panel live when this unit is damaged or turn resets
+		if not u.died.is_connected(_on_inspected_unit_changed):
+			u.died.connect(_on_inspected_unit_changed)
+			
+	# status_changed fires after every attack/move — cheapest refresh hook
+	if not _battle.status_changed.is_connected(_on_battle_status_changed):
+		_battle.status_changed.connect(_on_battle_status_changed)
+
+func _on_inspected_unit_changed(_unit: BaseUnit) -> void:
+	if _inspect_panel != null:
+		_inspect_panel.refresh()
+
+func _on_battle_status_changed(_msg: String) -> void:
+	if _inspect_panel != null:
+		_inspect_panel.refresh()
+		
 
 # ════════════════════════════════════════════════════════════════════
 # Input
@@ -487,7 +532,10 @@ func _set_unit(coord: Vector2i, type: int) -> void:
 	cell.unit_type = type
 
 	if _editor_units.has(coord):
-		_editor_units[coord].queue_free()
+		var old_u: BaseUnit = _editor_units[coord]
+		if _inspect_panel != null and _inspect_panel._unit == old_u:
+			_inspect_panel.hide_panel()
+		old_u.queue_free()
 		_editor_units.erase(coord)
 
 	if type != -1:
@@ -496,7 +544,7 @@ func _set_unit(coord: Vector2i, type: int) -> void:
 		u.place_at(coord, HEX_SIZE)
 		_unit_layer.add_child(u)
 		_editor_units[coord] = u
-
+		u.inspect_requested.connect(_on_unit_inspect)
 
 func _update_hover(screen_pos: Vector2) -> void:
 	var hex := _screen_to_hex(screen_pos)

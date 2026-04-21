@@ -34,7 +34,7 @@ var _tween: Tween = null
 var _sprite: Sprite2D = null
 
 # ── Sprite size (fits inside the 36px diameter body circle) ──────────
-const SPRITE_SIZE: float = 44.0
+const SPRITE_SIZE: float = 36.0
 
 # ── Signals ──────────────────────────────────────────────────────────
 signal moved(new_hex: Vector2i)
