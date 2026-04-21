@@ -104,28 +104,31 @@ const OVERLAY_DATA: Dictionary = {
 # ─────────────────────────────────────────────────────────────────────
 # HexCell — value object stored per tile
 # ─────────────────────────────────────────────────────────────────────
+
+## TerrainData.gd
+
 class HexCell:
 	var base:    TerrainData.Base    = TerrainData.Base.FLAT
 	var overlay: TerrainData.Overlay = TerrainData.Overlay.NONE
+	var unit_type: int = -1 # -1 = empty, otherwise UnitData.Type
 
-	func _init(b: TerrainData.Base    = TerrainData.Base.FLAT,
-			   o: TerrainData.Overlay = TerrainData.Overlay.NONE) -> void:
-		base    = b
+	func _init(b: TerrainData.Base = TerrainData.Base.FLAT, 
+			   o: TerrainData.Overlay = TerrainData.Overlay.NONE, 
+			   u: int = -1) -> void:
+		base = b
 		overlay = o
+		unit_type = u
 
-	## Movement cost = max(base, overlay).
-	## The most restrictive layer always wins.
 	func move_cost() -> int:
 		var bc: int = TerrainData.BASE_DATA[base]["move_cost"]
 		var oc: int = TerrainData.OVERLAY_DATA[overlay]["move_cost"]
 		return maxi(bc, oc)
 
-	## True when the cell can be entered at all.
 	func is_passable() -> bool:
 		return move_cost() < 99
 
 	func duplicate() -> HexCell:
-		return HexCell.new(base, overlay)
+		return HexCell.new(base, overlay, unit_type)
 
 # ─────────────────────────────────────────────────────────────────────
 # Static helpers

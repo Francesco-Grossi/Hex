@@ -1,10 +1,11 @@
 ## BaseUnit.gd
 ## Universal unit node used for both players and enemies.
-## All visuals are drawn with _draw() — no sprites needed.
-## Stats are driven by UnitData based on the assigned `unit_type`.
-##
-## HP bar, faction badge, and icon are all drawn on top of the body circle.
+## Sprites are loaded from res://assets/units/<type_name>.png
+## HP bar and faction badge are still drawn via _draw() on top.
 ## Call `setup(type)` right after add_child() to initialise.
+##
+## Right-clicking the unit emits `inspect_requested(unit)` so the
+## parent scene can open a detail panel.
 
 class_name BaseUnit
 extends Node2D
@@ -22,7 +23,7 @@ var unit_name: String = "Unit"
 
 # ── Runtime state ────────────────────────────────────────────────────
 var hex_pos: Vector2i = Vector2i.ZERO
-var moves_left: int   = 0     # remaining movement budget this turn
+var moves_left: int   = 0
 var has_attacked: bool = false
 var is_alive: bool = true
 
@@ -30,11 +31,20 @@ var is_alive: bool = true
 var body_color: Color = Color.WHITE
 var trim_color: Color = Color.GRAY
 var _tween: Tween = null
+var _sprite: Sprite2D = null
+
+# ── Sprite size (fits inside the 36px diameter body circle) ──────────
+const SPRITE_SIZE: float = 44.0
 
 # ── Signals ──────────────────────────────────────────────────────────
 signal moved(new_hex: Vector2i)
 signal died(unit: BaseUnit)
+signal inspect_requested(unit: BaseUnit)   ## emitted on right-click
 
+
+# ════════════════════════════════════════════════════════════════════
+# Initialisation
+# ════════════════════════════════════════════════════════════════════
 
 func setup(type: UnitData.Type) -> void:
 	unit_type = type
@@ -48,12 +58,68 @@ func setup(type: UnitData.Type) -> void:
 	unit_name  = info["name"]
 	body_color = info["body_color"]
 	trim_color = info["trim_color"]
+
+	_setup_sprite(type)
 	queue_redraw()
 
+
+func _setup_sprite(type: UnitData.Type) -> void:
+	if _sprite != null:
+		_sprite.queue_free()
+		_sprite = null
+
+	var type_name: String = UnitData.get_unit_name(type).to_lower()
+	var path: String = "res://assets/units/%s.png" % type_name
+
+	_sprite = Sprite2D.new()
+	_sprite.centered = true
+	_sprite.position = Vector2.ZERO
+	_sprite.z_index  = 0
+
+	if ResourceLoader.exists(path):
+		var tex: Texture2D = load(path)
+		_sprite.texture = tex
+		var tex_size: Vector2 = tex.get_size()
+		var scale_factor: float = SPRITE_SIZE / maxf(tex_size.x, tex_size.y)
+		_sprite.scale = Vector2(scale_factor, scale_factor)
+	else:
+		push_warning("BaseUnit: sprite not found at %s" % path)
+
+	add_child(_sprite)
+	_refresh_sprite_modulate()
+
+
+func _refresh_sprite_modulate() -> void:
+	if _sprite == null:
+		return
+	var dimmed: bool = (moves_left == 0 and has_attacked)
+	_sprite.modulate = Color(1.0, 1.0, 1.0, 0.45 if dimmed else 1.0)
+
+
+# ════════════════════════════════════════════════════════════════════
+# Input — detect right-click within the unit's radius
+# ════════════════════════════════════════════════════════════════════
+
+func _input(event: InputEvent) -> void:
+	if not is_alive:
+		return
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+			var local_pos: Vector2 = to_local(get_global_mouse_position())
+			if local_pos.length() <= 20.0:
+				inspect_requested.emit(self)
+				get_viewport().set_input_as_handled()
+
+
+# ════════════════════════════════════════════════════════════════════
+# Turn management
+# ════════════════════════════════════════════════════════════════════
 
 func reset_turn() -> void:
 	moves_left   = move_range
 	has_attacked = false
+	_refresh_sprite_modulate()
 	queue_redraw()
 
 
@@ -66,7 +132,8 @@ func take_damage(amount: int) -> void:
 
 
 # ════════════════════════════════════════════════════════════════════
-# Drawing
+# Drawing  (body circle + faction badge + HP bar + exhausted X)
+# The sprite child node draws the unit artwork underneath.
 # ════════════════════════════════════════════════════════════════════
 
 func _draw() -> void:
@@ -76,19 +143,16 @@ func _draw() -> void:
 	var dimmed: bool = (moves_left == 0 and has_attacked)
 	var alpha: float = 0.45 if dimmed else 1.0
 
-	# ── Body circle ──────────────────────────────────────────────────
-	var bc := Color(body_color, alpha)
-	draw_circle(Vector2.ZERO, 18.0, bc)
+	# ── Body circle (background behind sprite) ───────────────────────
+	draw_circle(Vector2.ZERO, 18.0, Color(body_color, alpha))
 	draw_arc(Vector2.ZERO, 18.0, 0.0, TAU, 32, Color(trim_color, alpha), 2.5)
 
-	# ── Faction badge (top-right corner pip) ────────────────────────
-	var badge_col: Color = Color(0.20, 0.50, 1.0, alpha) if faction == UnitData.Faction.PLAYER \
-						 else Color(0.85, 0.20, 0.20, alpha)
+	# ── Faction badge (top-right pip) ────────────────────────────────
+	var badge_col: Color = Color(0.20, 0.50, 1.0, alpha) \
+		if faction == UnitData.Faction.PLAYER \
+		else Color(0.85, 0.20, 0.20, alpha)
 	draw_circle(Vector2(11, -11), 5.0, badge_col)
 	draw_arc(Vector2(11, -11), 5.0, 0.0, TAU, 16, Color(1, 1, 1, alpha * 0.6), 1.0)
-
-	# ── Unit-type icon (simple geometric shapes) ─────────────────────
-	_draw_icon(alpha)
 
 	# ── HP bar ───────────────────────────────────────────────────────
 	_draw_hp_bar()
@@ -104,52 +168,16 @@ func _draw_hp_bar() -> void:
 	const BAR_H: float = 4.0
 	const BAR_Y: float = 22.0
 	var ratio: float = float(hp) / float(hp_max)
-	# Background
 	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W, BAR_H), Color(0.15, 0.15, 0.15, 0.85))
-	# Fill — colour shifts red→yellow→green
 	var bar_col := Color(1.0 - ratio, ratio, 0.0).lerp(Color(0.1, 0.9, 0.1), ratio * 0.5)
 	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W * ratio, BAR_H), bar_col)
-	# Border
 	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W, BAR_H), Color(0, 0, 0, 0.5), false, 0.8)
-
-
-func _draw_icon(alpha: float) -> void:
-	match unit_type:
-		UnitData.Type.KNIGHT:
-			# Sword
-			draw_line(Vector2(-6, 6), Vector2(6, -6), Color(0.9, 0.9, 0.9, alpha), 3.0, true)
-			draw_line(Vector2(-2, -1), Vector2(2, 3), Color(0.9, 0.9, 0.9, alpha), 1.5, true)
-		UnitData.Type.ARCHER:
-			# Bow arc + arrow
-			draw_arc(Vector2(-2, 0), 8.0, -PI * 0.5, PI * 0.5, 12, Color(0.8, 0.6, 0.3, alpha), 2.0)
-			draw_line(Vector2(-2, -8), Vector2(-2, 8), Color(0.8, 0.6, 0.3, alpha), 1.0)
-			draw_line(Vector2(-2, 0), Vector2(9, 0), Color(0.9, 0.9, 0.9, alpha), 1.5, true)
-		UnitData.Type.MAGE:
-			# Star-ish shape: 4 lines radiating
-			for angle in [0.0, PI * 0.5, PI, PI * 1.5]:
-				var d := Vector2(cos(angle), sin(angle)) * 9.0
-				draw_line(Vector2.ZERO, d, Color(trim_color, alpha), 1.5, true)
-			draw_circle(Vector2.ZERO, 4.0, Color(trim_color, alpha * 0.8))
-		UnitData.Type.ORC:
-			# Axe silhouette
-			draw_line(Vector2(0, 7), Vector2(0, -5), Color(0.7, 0.7, 0.7, alpha), 2.5, true)
-			var blade := PackedVector2Array([Vector2(-5,-5), Vector2(5,-5), Vector2(3,-1), Vector2(-3,-1)])
-			draw_colored_polygon(blade, Color(0.75, 0.75, 0.75, alpha))
-		UnitData.Type.GOBLIN:
-			# Dagger (short diagonal line + crossguard)
-			draw_line(Vector2(-5, 5), Vector2(5, -5), Color(0.8, 0.8, 0.8, alpha), 2.0, true)
-			draw_line(Vector2(-2, -2), Vector2(2, 2), Color(0.8, 0.6, 0.2, alpha), 1.5)
-		UnitData.Type.TROLL:
-			# Club (thick line + oval top)
-			draw_line(Vector2(0, 8), Vector2(0, -2), Color(0.5, 0.35, 0.20, alpha), 5.0, true)
-			draw_circle(Vector2(0, -6), 6.0, Color(0.45, 0.30, 0.18, alpha))
 
 
 # ════════════════════════════════════════════════════════════════════
 # Movement
 # ════════════════════════════════════════════════════════════════════
 
-## Animate movement to new hex, deduct terrain cost from moves_left
 func move_to(new_hex: Vector2i, hex_size: float, terrain_cost: int = 1) -> void:
 	hex_pos = new_hex
 	moves_left -= terrain_cost
@@ -161,12 +189,13 @@ func move_to(new_hex: Vector2i, hex_size: float, terrain_cost: int = 1) -> void:
 	_tween.set_ease(Tween.EASE_OUT)
 	_tween.set_trans(Tween.TRANS_CUBIC)
 	_tween.tween_property(self, "position", target, 0.20)
-	_tween.tween_callback(queue_redraw)
+	_tween.tween_callback(func() -> void:
+		_refresh_sprite_modulate()
+		queue_redraw())
 
 	moved.emit(new_hex)
 
 
-## Instant placement (no animation)
 func place_at(hex: Vector2i, hex_size: float) -> void:
 	hex_pos = hex
 	position = HexGrid.axial_to_world(hex, hex_size)

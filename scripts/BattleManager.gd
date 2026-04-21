@@ -1,20 +1,18 @@
 ## BattleManager.gd
-## Manages a full battle session on top of an existing hex map.
-##
-## terrain_map is now Dictionary[Vector2i, TerrainData.HexCell].
-## UnitData.move_cost() accepts a HexCell directly.
-## Units have their z_index set from tile.unit_z() each time they move.
+## Into-the-Breach style AI: intents frozen at player-phase start.
+## Path stored per-intent so the overlay draws the real route, not a straight line.
+## Execution walks the stored path to find the last unoccupied tile.
 
 class_name BattleManager
 extends Node2D
 
-const HEX_SIZE: float = 44.0
+const HEX_SIZE: float = 72.0
 
 # ── External references ───────────────────────────────────────────────
-var tiles:       Dictionary = {}   # Vector2i → HexTile
-var terrain_map: Dictionary = {}   # Vector2i → TerrainData.HexCell
-var unit_layer:  Node2D     = null
-var status_label:Label      = null
+var tiles:        Dictionary = {}
+var terrain_map:  Dictionary = {}
+var unit_layer:   Node2D     = null
+var status_label: Label      = null
 
 # ── Unit tracking ────────────────────────────────────────────────────
 var player_units: Array[BaseUnit] = []
@@ -26,10 +24,20 @@ enum Phase { PLAYER, ENEMY, VICTORY, DEFEAT }
 var phase: Phase = Phase.PLAYER
 
 var selected_unit:    BaseUnit        = null
-var reachable_hexes:  Dictionary      = {}   # Vector2i → cost
+var reachable_hexes:  Dictionary      = {}
 var attackable_hexes: Array[Vector2i] = []
 
-# ── Signals ──────────────────────────────────────────────────────────
+# ── AI intent ────────────────────────────────────────────────────────
+## Each intent: {
+##   "unit":       BaseUnit,
+##   "origin":     Vector2i,   ← where the unit was when planned
+##   "path":       Array[Vector2i],  ← full A* waypoints (excludes origin)
+##   "move_to":    Vector2i,   ← last reachable step on path
+##   "attack":     Vector2i or null
+## }
+var _ai_intents: Array   = []
+var _intent_overlay: Node2D = null
+
 signal battle_ended(victory: bool)
 signal status_changed(text: String)
 signal phase_changed(new_phase: Phase)
@@ -45,6 +53,12 @@ func setup(p_tiles: Dictionary, p_terrain: Dictionary,
 	terrain_map  = p_terrain
 	unit_layer   = p_unit_layer
 	status_label = p_status
+
+	_intent_overlay          = Node2D.new()
+	_intent_overlay.name     = "AIIntentOverlay"
+	_intent_overlay.z_index  = 200
+	unit_layer.add_child(_intent_overlay)
+	_intent_overlay.set_script(_make_intent_draw_script())
 
 
 func start_battle(player_placements: Array = [],
@@ -107,12 +121,230 @@ func _make_unit(type: UnitData.Type, hex: Vector2i) -> BaseUnit:
 	return u
 
 
-## Set unit z_index from its tile so tall overlays don't clip through it.
 func _apply_unit_z(u: BaseUnit, hex: Vector2i) -> void:
 	if tiles.has(hex):
-		u.z_index = tiles[hex].unit_z()
+		u.z_index = tiles[hex].unit_z() + 5
 	else:
 		u.z_index = hex.y * 10 + 5
+
+
+# ════════════════════════════════════════════════════════════════════
+# AI Intent — computed once, frozen all player turn
+# ════════════════════════════════════════════════════════════════════
+
+func _compute_ai_intents() -> void:
+	_ai_intents.clear()
+	_clear_intent_highlights()
+
+	var claimed: Dictionary = {}  # Vector2i → true  (reserved destinations)
+
+	for enemy in enemy_units:
+		if not enemy.is_alive:
+			continue
+		# Pre-claim every enemy's current tile so others route around them
+		claimed[enemy.hex_pos] = true
+
+	# Now plan each enemy, un-claiming self before planning, re-claiming dest after
+	for enemy in enemy_units:
+		if not enemy.is_alive:
+			continue
+		# Temporarily remove own tile from claimed so we can leave it
+		claimed.erase(enemy.hex_pos)
+		var intent := _plan_enemy_action(enemy, claimed)
+		_ai_intents.append(intent)
+		# Claim destination (may be same as origin if blocked)
+		claimed[intent["move_to"]] = true
+
+	_apply_intent_highlights()
+	_push_overlay()
+
+
+func _plan_enemy_action(enemy: BaseUnit, claimed: Dictionary) -> Dictionary:
+	var target: BaseUnit = _closest_player(enemy)
+	if target == null:
+		return { "unit": enemy, "origin": enemy.hex_pos,
+				 "path": [], "move_to": enemy.hex_pos, "attack": null }
+
+	# Already adjacent → stay and attack
+	if HexGrid.distance(enemy.hex_pos, target.hex_pos) == 1:
+		return { "unit": enemy, "origin": enemy.hex_pos,
+				 "path": [], "move_to": enemy.hex_pos, "attack": target.hex_pos }
+
+	# Cost function for A*: impassable terrain, occupied tiles, claimed destinations
+	# The target hex itself is allowed through (we stop one step before)
+	var cost_fn: Callable = func(hex: Vector2i) -> int:
+		if not terrain_map.has(hex):
+			return 99
+		var base_cost: int = UnitData.move_cost(enemy.unit_type, terrain_map[hex])
+		if base_cost >= 99:
+			return 99
+		if hex == target.hex_pos:
+			return base_cost   # passable for routing, we won't land here
+		if _unit_at(hex) != null:
+			return 99          # blocked by any living unit (friend or foe)
+		if claimed.has(hex):
+			return 99          # another enemy already claimed this spot
+		return base_cost
+
+	var full_path: Array[Vector2i] = HexGrid.astar_path(
+		enemy.hex_pos, target.hex_pos, cost_fn)
+
+	if full_path.is_empty():
+		return { "unit": enemy, "origin": enemy.hex_pos,
+				 "path": [], "move_to": enemy.hex_pos, "attack": null }
+
+	# Walk the path up to move_range budget, stopping before target or claimed tiles
+	var spent: int      = 0
+	var dest: Vector2i  = enemy.hex_pos
+	var path_to_dest: Array[Vector2i] = []
+
+	for step_hex in full_path:
+		if step_hex == target.hex_pos:
+			break
+		var t_cost: int = UnitData.move_cost(enemy.unit_type,
+			terrain_map.get(step_hex, TerrainData.HexCell.new()))
+		if t_cost >= 99:
+			break
+		if spent + t_cost > enemy.move_range:
+			break
+		if claimed.has(step_hex):
+			break
+		spent += t_cost
+		dest   = step_hex
+		path_to_dest.append(step_hex)
+
+	var will_attack = null
+	if HexGrid.distance(dest, target.hex_pos) == 1:
+		will_attack = target.hex_pos
+
+	return {
+		"unit":    enemy,
+		"origin":  enemy.hex_pos,
+		"path":    path_to_dest,
+		"move_to": dest,
+		"attack":  will_attack
+	}
+
+
+func _apply_intent_highlights() -> void:
+	for intent in _ai_intents:
+		var unit: BaseUnit = intent["unit"]
+		var dest: Vector2i = intent["move_to"]
+		if dest != unit.hex_pos and tiles.has(dest):
+			tiles[dest].set_enemy_intent(true)
+		var atk = intent["attack"]
+		if atk != null and tiles.has(atk):
+			tiles[atk].set_attack_target(true)
+
+
+func _clear_intent_highlights() -> void:
+	for intent in _ai_intents:
+		var dest: Vector2i = intent["move_to"]
+		if tiles.has(dest):
+			tiles[dest].set_enemy_intent(false)
+		var atk = intent["attack"]
+		if atk != null and tiles.has(atk):
+			tiles[atk].set_attack_target(false)
+
+
+func _push_overlay() -> void:
+	if not is_instance_valid(_intent_overlay):
+		return
+	_intent_overlay.set_meta("intents",  _ai_intents)
+	_intent_overlay.set_meta("hex_size", HEX_SIZE)
+	_intent_overlay.queue_redraw()
+
+
+# ════════════════════════════════════════════════════════════════════
+# Overlay draw script — traces the real path, not a straight line
+# ════════════════════════════════════════════════════════════════════
+
+func _make_intent_draw_script() -> GDScript:
+	var src := """
+extends Node2D
+
+func _draw() -> void:
+	if not has_meta("intents"):
+		return
+	var intents  = get_meta("intents")
+	var hex_size: float = get_meta("hex_size") if has_meta("hex_size") else 72.0
+
+	for intent in intents:
+		var unit = intent["unit"]
+		if not is_instance_valid(unit) or not unit.is_alive:
+			continue
+
+		var origin_hex: Vector2i       = intent["origin"]
+		var path: Array                = intent["path"]
+		var dest_hex: Vector2i         = intent["move_to"]
+		var atk_hex                    = intent["attack"]
+
+		var origin_w: Vector2 = HexGrid.axial_to_world(origin_hex, hex_size)
+
+		# ── Movement path: trace every waypoint ─────────────────────
+		if path.size() > 0:
+			var prev_w: Vector2 = origin_w
+			for i in range(path.size()):
+				var step_hex: Vector2i = path[i]
+				var step_w: Vector2    = HexGrid.axial_to_world(step_hex, hex_size)
+				var is_last: bool      = (i == path.size() - 1)
+				_draw_segment(prev_w, step_w,
+					Color(1.0, 0.18, 0.18, 0.95), 3.5, false, is_last)
+				prev_w = step_w
+
+		# ── Attack arrow from destination to target ──────────────────
+		if atk_hex != null:
+			var dest_w: Vector2 = HexGrid.axial_to_world(dest_hex, hex_size)
+			var atk_w:  Vector2 = HexGrid.axial_to_world(atk_hex,  hex_size)
+			_draw_segment(dest_w, atk_w,
+				Color(1.0, 0.0, 0.0, 1.0), 2.5, true, true)
+
+
+## Draw one segment of the path, optionally solid and with arrowhead.
+func _draw_segment(from: Vector2, to: Vector2, col: Color,
+		width: float, solid: bool, arrowhead: bool) -> void:
+	var delta: Vector2 = to - from
+	var length: float  = delta.length()
+	if length < 2.0:
+		return
+	var dir:  Vector2 = delta / length
+	var perp: Vector2 = Vector2(-dir.y, dir.x)
+
+	var pad_start: float = 22.0   # clear the origin unit circle
+	var pad_end:   float = 22.0   # clear the destination circle
+	var f: Vector2 = from + dir * pad_start
+	var t: Vector2 = to   - dir * pad_end
+
+	if (t - f).length() < 2.0:
+		return
+
+	if solid:
+		draw_line(f, t, col, width, true)
+	else:
+		var dash: float = 11.0
+		var gap:  float =  6.0
+		var total: float = (t - f).length()
+		var cursor: Vector2 = f
+		var on: bool = true
+		var travelled: float = 0.0
+		while travelled < total:
+			var step: float = minf(dash if on else gap, total - travelled)
+			if on:
+				draw_line(cursor, cursor + dir * step, col, width, true)
+			cursor     += dir * step
+			travelled  += step
+			on          = not on
+
+	if arrowhead:
+		var tip: Vector2    = t
+		var sz:  float      = 11.0
+		draw_line(tip, tip - dir * sz + perp * sz * 0.5, col, width, true)
+		draw_line(tip, tip - dir * sz - perp * sz * 0.5, col, width, true)
+"""
+	var s := GDScript.new()
+	s.source_code = src
+	s.reload()
+	return s
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -125,7 +357,8 @@ func _begin_player_phase() -> void:
 		if u.is_alive:
 			u.reset_turn()
 	_deselect()
-	_set_status("Your turn — select a unit")
+	_compute_ai_intents()
+	_set_status("Your turn — select a unit  (red arrows = enemy plans)")
 	phase_changed.emit(phase)
 
 
@@ -134,6 +367,10 @@ func end_player_turn() -> void:
 		return
 	_deselect()
 	_clear_highlights()
+	_clear_intent_highlights()
+	if is_instance_valid(_intent_overlay):
+		_intent_overlay.set_meta("intents", [])
+		_intent_overlay.queue_redraw()
 	phase = Phase.ENEMY
 	phase_changed.emit(phase)
 	_set_status("Enemy turn…")
@@ -153,8 +390,16 @@ func _process_enemy(living: Array[BaseUnit], idx: int) -> void:
 		get_tree().create_timer(0.3).timeout.connect(_begin_player_phase)
 		return
 	var enemy: BaseUnit = living[idx]
+	if not enemy.is_alive:
+		_process_enemy(living, idx + 1)
+		return
 	enemy.reset_turn()
-	_ai_move_and_attack(enemy)
+	var intent: Dictionary = {}
+	for i in _ai_intents:
+		if i["unit"] == enemy:
+			intent = i
+			break
+	_execute_intent(enemy, intent)
 	get_tree().create_timer(0.55).timeout.connect(
 		func() -> void: _process_enemy(living, idx + 1))
 
@@ -278,49 +523,58 @@ func _do_attack(attacker: BaseUnit, defender: BaseUnit) -> void:
 
 
 # ════════════════════════════════════════════════════════════════════
-# Enemy AI
+# Enemy execution — follows frozen path, finds last free tile
 # ════════════════════════════════════════════════════════════════════
 
-func _ai_move_and_attack(enemy: BaseUnit) -> void:
-	var target: BaseUnit = _closest_player(enemy)
-	if target == null:
+func _execute_intent(enemy: BaseUnit, intent: Dictionary) -> void:
+	if intent.is_empty():
 		return
 
-	if HexGrid.distance(enemy.hex_pos, target.hex_pos) == 1:
-		_ai_attack(enemy, target)
-		return
+	var planned_dest: Vector2i      = intent["move_to"]
+	var path: Array                 = intent["path"]   # Array[Vector2i]
+	var atk                         = intent["attack"] # Vector2i or null
 
-	var cost_fn: Callable = func(hex: Vector2i) -> int:
-		if not terrain_map.has(hex):
-			return 99
-		if hex != target.hex_pos and _unit_at(hex) != null:
-			return 99
-		return UnitData.move_cost(enemy.unit_type, terrain_map[hex])
+	# Walk the stored path and find the last tile that is still free.
+	# This handles the case where the player moved into a tile during their turn.
+	var actual_dest: Vector2i = enemy.hex_pos   # stay by default
+	if planned_dest != enemy.hex_pos:
+		# Try tiles along path from end toward start until we find a free one
+		# First try the planned destination
+		if _unit_at(planned_dest) == null:
+			actual_dest = planned_dest
+		else:
+			# Walk path in order, take last free step
+			for step_hex in path:
+				if step_hex == planned_dest:
+					break
+				if _unit_at(step_hex) == null:
+					actual_dest = step_hex
+				else:
+					break   # blocked earlier on path, stop here
 
-	var path: Array[Vector2i] = HexGrid.astar_path(
-		enemy.hex_pos, target.hex_pos, cost_fn)
-	if path.is_empty():
-		return
+	if actual_dest != enemy.hex_pos:
+		var cost: int = UnitData.move_cost(enemy.unit_type,
+			terrain_map.get(actual_dest, TerrainData.HexCell.new()))
+		enemy.move_to(actual_dest, HEX_SIZE, cost)
+		_apply_unit_z(enemy, actual_dest)
 
-	var spent: int      = 0
-	var last_valid: Vector2i = enemy.hex_pos
-	for step_hex in path:
-		if step_hex == target.hex_pos:
-			break
-		var t_cost: int = UnitData.move_cost(enemy.unit_type,
-			terrain_map.get(step_hex, TerrainData.HexCell.new()))
-		if spent + t_cost > enemy.moves_left:
-			break
-		spent     += t_cost
-		last_valid = step_hex
-
-	if last_valid != enemy.hex_pos:
-		enemy.move_to(last_valid, HEX_SIZE, spent)
-		_apply_unit_z(enemy, last_valid)
-
-	if HexGrid.distance(last_valid, target.hex_pos) == 1:
-		get_tree().create_timer(0.22).timeout.connect(
-			func() -> void: _ai_attack(enemy, target))
+	# Attack: execute regardless — even if enemy couldn't move, if
+	# the target is still adjacent (or enemy was already adjacent) attack.
+	if atk != null:
+		var atk_hex: Vector2i = atk
+		get_tree().create_timer(0.24).timeout.connect(func() -> void:
+			# Always attack if still adjacent — phantom attack executes
+			var defender: BaseUnit = _unit_at(atk_hex)
+			if defender != null and defender.faction == UnitData.Faction.PLAYER \
+					and defender.is_alive:
+				# Check adjacency from wherever enemy actually ended up
+				if HexGrid.distance(enemy.hex_pos, atk_hex) == 1:
+					_ai_attack(enemy, defender)
+				# If enemy couldn't reach adjacency, still deal damage as
+				# phantom — the intent was announced so it executes
+				elif HexGrid.distance(intent["origin"], atk_hex) == 1:
+					_ai_attack(enemy, defender)
+		)
 
 
 func _ai_attack(enemy: BaseUnit, target: BaseUnit) -> void:
@@ -363,6 +617,7 @@ func _check_game_over() -> bool:
 
 	if not enemies_alive:
 		phase = Phase.VICTORY
+		_clear_intent_highlights()
 		_set_status("⚔ Victory! All enemies defeated.")
 		phase_changed.emit(phase)
 		battle_ended.emit(true)
@@ -370,6 +625,7 @@ func _check_game_over() -> bool:
 
 	if not players_alive:
 		phase = Phase.DEFEAT
+		_clear_intent_highlights()
 		_set_status("💀 Defeat. All your units have fallen.")
 		phase_changed.emit(phase)
 		battle_ended.emit(false)

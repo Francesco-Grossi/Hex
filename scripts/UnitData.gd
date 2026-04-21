@@ -126,7 +126,7 @@ const UNITS: Dictionary = {
 static func get_info(type: Type) -> Dictionary:
 	return UNITS[type]
 
-static func get_name(type: Type) -> String:
+static func get_unit_name(type: Type) -> String:
 	return UNITS[type]["name"]
 
 static func get_faction(type: Type) -> Faction:
