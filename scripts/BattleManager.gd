@@ -165,8 +165,17 @@ func _plan_enemy_action(enemy: BaseUnit, claimed: Dictionary) -> Dictionary:
 		return { "unit": enemy, "origin": enemy.hex_pos,
 				 "path": [], "move_to": enemy.hex_pos, "attack": null }
 
-	# Already adjacent → stay and attack
-	if HexGrid.distance(enemy.hex_pos, target.hex_pos) == 1:
+	var atk_range: int = UnitData.get_attack_range(enemy.unit_type)
+	var kind: int      = UnitData.get_projectile_kind(enemy.unit_type)
+	var dist: int      = HexGrid.distance(enemy.hex_pos, target.hex_pos)
+
+	# Already in attack range → stay and attack
+	# For ARROW: also check LOS; for ARC and melee: distance is enough
+	var in_range: bool = dist <= atk_range
+	if in_range and kind == ProjectileData.Kind.ARROW:
+		in_range = (_arrow_reaches(enemy.hex_pos, target.hex_pos) == target.hex_pos)
+
+	if in_range:
 		return { "unit": enemy, "origin": enemy.hex_pos,
 				 "path": [], "move_to": enemy.hex_pos, "attack": target.hex_pos }
 
@@ -213,8 +222,13 @@ func _plan_enemy_action(enemy: BaseUnit, claimed: Dictionary) -> Dictionary:
 		dest   = step_hex
 		path_to_dest.append(step_hex)
 
+	# Will attack if within range after moving
 	var will_attack = null
-	if HexGrid.distance(dest, target.hex_pos) == 1:
+	var new_dist: int = HexGrid.distance(dest, target.hex_pos)
+	var new_in_range: bool = new_dist <= atk_range
+	if new_in_range and kind == ProjectileData.Kind.ARROW:
+		new_in_range = (_arrow_reaches(dest, target.hex_pos) == target.hex_pos)
+	if new_in_range:
 		will_attack = target.hex_pos
 
 	return {
@@ -422,6 +436,10 @@ func handle_hex_click(hex: Vector2i) -> void:
 		if clicked_unit != null and clicked_unit.faction == UnitData.Faction.ENEMY:
 			_do_attack(selected_unit, clicked_unit)
 			return
+		# Ranged unit clicking an attackable hex with no enemy — fire anyway (miss)
+		if UnitData.get_attack_range(selected_unit.unit_type) > 1 and not selected_unit.has_attacked:
+			_do_ranged_attack_at(selected_unit, hex)
+			return
 
 	if selected_unit != null and reachable_hexes.has(hex) \
 			and _unit_at(hex) == null:
@@ -485,12 +503,28 @@ func _highlight_for(u: BaseUnit) -> void:
 				tiles[hex].set_reachable(true)
 
 	if not u.has_attacked:
-		for nb in HexGrid.neighbors(u.hex_pos):
-			var t: BaseUnit = _unit_at(nb)
-			if t != null and t.faction == UnitData.Faction.ENEMY and t.is_alive:
-				attackable_hexes.append(nb)
-				if tiles.has(nb):
-					tiles[nb].set_attack_target(true)
+		var atk_range: int = UnitData.get_attack_range(u.unit_type)
+		var kind: int      = UnitData.get_projectile_kind(u.unit_type)
+
+		if atk_range <= 1:
+			# Melee — only adjacent enemies
+			for nb in HexGrid.neighbors(u.hex_pos):
+				var t: BaseUnit = _unit_at(nb)
+				if t != null and t.faction == UnitData.Faction.ENEMY and t.is_alive:
+					attackable_hexes.append(nb)
+					if tiles.has(nb):
+						tiles[nb].set_attack_target(true)
+		else:
+			# Ranged — all enemy hexes within attack_range with valid LOS/arc
+			for r in range(1, atk_range + 1):
+				for hex in HexGrid.ring(u.hex_pos, r):
+					var t: BaseUnit = _unit_at(hex)
+					if t == null or t.faction != UnitData.Faction.ENEMY or not t.is_alive:
+						continue
+					if kind == ProjectileData.Kind.ARC or _arrow_reaches(u.hex_pos, hex) == hex:
+						attackable_hexes.append(hex)
+						if tiles.has(hex):
+							tiles[hex].set_attack_target(true)
 
 
 func _clear_highlights() -> void:
@@ -512,15 +546,125 @@ func _do_attack(attacker: BaseUnit, defender: BaseUnit) -> void:
 	if attacker.has_attacked:
 		_set_status("%s already attacked this turn!" % attacker.unit_name)
 		return
+ 
+	var atk_range: int = UnitData.get_attack_range(attacker.unit_type)
+ 
+	if atk_range <= 1:
+		# Melee — instant
+		attacker.has_attacked = true
+		defender.take_damage(attacker.attack)
+		_set_status("%s attacks %s for %d! (%d HP left)" % [
+			attacker.unit_name, defender.unit_name, attacker.attack, defender.hp])
+		_clear_highlights()
+		if selected_unit != null:
+			_highlight_for(selected_unit)
+		_check_game_over()
+	else:
+		# Ranged — fire projectile, damage on landing
+		_do_ranged_attack_at(attacker, defender.hex_pos)
+
+# ════════════════════════════════════════════════════════════════════
+# Combat — ranged
+# ════════════════════════════════════════════════════════════════════
+ 
+## Fire a projectile from `attacker` toward `target_hex`.
+## For ARROW: compute where the line is blocked and land there.
+## For ARC:   always land on target_hex.
+func _do_ranged_attack_at(attacker: BaseUnit, target_hex: Vector2i) -> void:
+	if attacker.has_attacked:
+		return
 	attacker.has_attacked = true
-	defender.take_damage(attacker.attack)
-	_set_status("%s attacks %s for %d! (%d HP left)" % [
-		attacker.unit_name, defender.unit_name, attacker.attack, defender.hp])
 	_clear_highlights()
+ 
+	var kind: int = UnitData.get_projectile_kind(attacker.unit_type)
+	var landed_hex: Vector2i
+ 
+	if kind == ProjectileData.Kind.ARC:
+		landed_hex = target_hex                        # always reaches
+	else:
+		# ARROW: find first blocking hex on the line
+		var blocked := _arrow_reaches(attacker.hex_pos, target_hex)
+		landed_hex = blocked
+ 
+	var from_world: Vector2 = HexGrid.axial_to_world(attacker.hex_pos, HEX_SIZE)
+	var to_world:   Vector2 = HexGrid.axial_to_world(landed_hex, HEX_SIZE)
+ 
+	var proj := Projectile.new()
+	proj.position = Vector2.ZERO   # drawn relative to world origin via _from offset
+	unit_layer.add_child(proj)
+ 
+	var proj_color: Color = UnitData.UNITS[attacker.unit_type]["trim_color"]
+	proj.fire(from_world, to_world,
+			  kind as ProjectileData.Kind,
+			  proj_color,
+			  landed_hex if landed_hex != target_hex else Vector2i(-1, -1))
+ 
+	var attacker_ref := attacker   # capture for lambda
+	var landed_ref   := landed_hex
+	proj.landed.connect(func(blocked_hex: Vector2i) -> void:
+		_on_projectile_landed(attacker_ref, landed_ref))
+ 
+
+## Variant used by AI: fire_origin can differ from attacker.hex_pos (phantom attacks)
+func _do_ranged_attack_at_from(attacker: BaseUnit, target_hex: Vector2i, fire_origin: Vector2i) -> void:
+	var kind: int = UnitData.get_projectile_kind(attacker.unit_type)
+	var landed_hex: Vector2i
+	if kind == ProjectileData.Kind.ARC:
+		landed_hex = target_hex
+	else:
+		landed_hex = _arrow_reaches(fire_origin, target_hex)
+
+	var from_world: Vector2 = HexGrid.axial_to_world(fire_origin, HEX_SIZE)
+	var to_world:   Vector2 = HexGrid.axial_to_world(landed_hex, HEX_SIZE)
+
+	var proj := Projectile.new()
+	proj.position = Vector2.ZERO
+	unit_layer.add_child(proj)
+
+	var proj_color: Color = UnitData.UNITS[attacker.unit_type]["trim_color"]
+	proj.fire(from_world, to_world,
+			  kind as ProjectileData.Kind,
+			  proj_color,
+			  landed_hex if landed_hex != target_hex else Vector2i(-1, -1))
+
+	var attacker_ref := attacker
+	var landed_ref   := landed_hex
+	proj.landed.connect(func(_blocked: Vector2i) -> void:
+		_on_projectile_landed(attacker_ref, landed_ref))
+
+
+func _on_projectile_landed(attacker: BaseUnit, landed_hex: Vector2i) -> void:
+	var target: BaseUnit = _unit_at(landed_hex)
+	if target != null and target.faction != attacker.faction and target.is_alive:
+		target.take_damage(attacker.attack)
+		_set_status("%s fires at %s for %d! (%d HP left)" % [
+			attacker.unit_name, target.unit_name, attacker.attack, target.hp])
+	else:
+		_set_status("%s fires — no target at destination." % attacker.unit_name)
+ 
 	if selected_unit != null:
 		_highlight_for(selected_unit)
 	_check_game_over()
-
+ 
+ 
+## Walk the hex line from `origin` (exclusive) to `goal` (inclusive).
+## Return the first hex that is blocked by terrain or a unit.
+## If nothing blocks, return `goal`.
+func _arrow_reaches(origin: Vector2i, goal: Vector2i) -> Vector2i:
+	var line: Array[Vector2i] = HexGrid.hex_line(origin, goal)
+	# Skip index 0 (that's the shooter's own hex)
+	for i in range(1, line.size()):
+		var hex: Vector2i = line[i]
+		# Blocked by a unit on an intermediate hex (not the final target)
+		if i < line.size() - 1:
+			if _unit_at(hex) != null:
+				return hex
+		# Blocked by terrain overlay (forest/building/wall) on any intermediate hex
+		if i < line.size() - 1 and terrain_map.has(hex):
+			if ProjectileData.overlay_blocks_arrow(int(terrain_map[hex].overlay)):
+				return hex
+	return goal
+ 
 
 # ════════════════════════════════════════════════════════════════════
 # Enemy execution — follows frozen path, finds last free tile
@@ -558,31 +702,43 @@ func _execute_intent(enemy: BaseUnit, intent: Dictionary) -> void:
 		enemy.move_to(actual_dest, HEX_SIZE, cost)
 		_apply_unit_z(enemy, actual_dest)
 
-	# Attack: execute regardless — even if enemy couldn't move, if
-	# the target is still adjacent (or enemy was already adjacent) attack.
+	# Attack: execute if target is still in range from wherever enemy ended up
 	if atk != null:
 		var atk_hex: Vector2i = atk
 		get_tree().create_timer(0.24).timeout.connect(func() -> void:
-			# Always attack if still adjacent — phantom attack executes
 			var defender: BaseUnit = _unit_at(atk_hex)
-			if defender != null and defender.faction == UnitData.Faction.PLAYER \
-					and defender.is_alive:
-				# Check adjacency from wherever enemy actually ended up
-				if HexGrid.distance(enemy.hex_pos, atk_hex) == 1:
-					_ai_attack(enemy, defender)
-				# If enemy couldn't reach adjacency, still deal damage as
-				# phantom — the intent was announced so it executes
-				elif HexGrid.distance(intent["origin"], atk_hex) == 1:
-					_ai_attack(enemy, defender)
+			if defender == null or not defender.is_alive:
+				return
+			if defender.faction != UnitData.Faction.PLAYER:
+				return
+			var atk_range: int  = UnitData.get_attack_range(enemy.unit_type)
+			var kind: int       = UnitData.get_projectile_kind(enemy.unit_type)
+			var actual_dist: int = HexGrid.distance(enemy.hex_pos, atk_hex)
+			var origin_dist: int = HexGrid.distance(intent["origin"], atk_hex)
+			# Fire from actual position if in range, else phantom-fire from origin
+			var fire_from: Vector2i = enemy.hex_pos if actual_dist <= atk_range \
+									 else intent["origin"] if origin_dist <= atk_range \
+									 else Vector2i(-1, -1)
+			if fire_from == Vector2i(-1, -1):
+				return
+			_ai_attack(enemy, defender, fire_from)
 		)
 
 
-func _ai_attack(enemy: BaseUnit, target: BaseUnit) -> void:
-	if not target.is_alive:
+func _ai_attack(enemy: BaseUnit, target: BaseUnit, fire_from: Vector2i = Vector2i(-1, -1)) -> void:
+	if not target.is_alive or enemy.has_attacked:
 		return
-	target.take_damage(enemy.attack)
-	_set_status("%s attacks %s for %d! (%d HP)" % [
-		enemy.unit_name, target.unit_name, enemy.attack, target.hp])
+	enemy.has_attacked = true
+	var atk_range: int = UnitData.get_attack_range(enemy.unit_type)
+	if atk_range <= 1:
+		# Melee — instant damage
+		target.take_damage(enemy.attack)
+		_set_status("%s attacks %s for %d! (%d HP)" % [
+			enemy.unit_name, target.unit_name, enemy.attack, target.hp])
+	else:
+		# Ranged — fire projectile from fire_from (or enemy.hex_pos as fallback)
+		var origin: Vector2i = fire_from if fire_from != Vector2i(-1, -1) else enemy.hex_pos
+		_do_ranged_attack_at_from(enemy, target.hex_pos, origin)
 
 
 func _closest_player(enemy: BaseUnit) -> BaseUnit:
