@@ -97,25 +97,33 @@ func setup(type: UnitData.Type) -> void:
 
 ## Recompute all derived stats from current equipment.
 func _refresh_stats() -> void:
-	# Active weapon drives attack and range
+	# 1. Active weapon drives attack and range
 	var wpn := _active_weapon_info()
-	attack       = wpn["damage"]
-	attack_range = wpn["attack_range"]
+	# Use .get() to provide safe defaults (0 damage, 1 range) if data is missing
+	attack       = wpn.get("damage", 0)
+	attack_range = wpn.get("attack_range", 1)
 
-	# Steed drives movement
+	# 2. Steed drives movement
 	if steed != EquipmentData.SteedType.NONE:
-		move_range = EquipmentData.STEEDS[steed]["move_range"]
+		# Use steed_info() instead of direct STEEDS[] access to ensure data is loaded
+		var s_info = EquipmentData.steed_info(steed)
+		move_range = s_info.get("move_range", 3)
 	else:
-		move_range = UnitData.UNITS[unit_type]["move_range"]
+		# Use get_info() instead of direct UNITS[] access to ensure data is loaded
+		var u_info = UnitData.get_info(unit_type)
+		move_range = u_info.get("move_range", 3)
 
-	# Armor stacks
+	# 3. Armor stacks
 	protection = EquipmentData.total_reduction(armor, helmet)
 
 
 func _active_weapon_info() -> Dictionary:
+	# Corrected variable name from 'weapon_id' to 'wpn_type'
 	var wpn_type := primary_weapon if active_weapon == WeaponSlot.PRIMARY \
 				  else secondary_weapon
-	return EquipmentData.WEAPONS[wpn_type]
+	
+	# Calls the safe accessor which handles the lazy loading and missing keys
+	return EquipmentData.weapon_info(wpn_type)
 
 
 ## Switch which weapon slot is active. Refreshes stats.

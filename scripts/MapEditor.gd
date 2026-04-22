@@ -245,7 +245,7 @@ func _build_ui() -> void:
 	unit_row.add_child(del_btn)
 
 	for type in UnitData.Type.values():
-		var info = UnitData.UNITS[type]
+		var info = UnitData.get_info(type)
 		var btn := _make_terrain_btn(info["name"], info["body_color"])
 		btn.pressed.connect(func(): _on_unit_selected(type))
 		unit_row.add_child(btn)

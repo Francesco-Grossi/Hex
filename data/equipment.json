@@ -1,0 +1,141 @@
+{
+  "weapons": {
+    "NONE": {
+      "name": "Unarmed",
+      "damage": 1,
+      "attack_range": 1,
+      "projectile_kind": -1,
+      "description": "No weapon equipped."
+    },
+    "SWORD": {
+      "name": "Sword",
+      "damage": 3,
+      "attack_range": 1,
+      "projectile_kind": -1,
+      "description": "Reliable one-handed blade."
+    },
+    "AXE": {
+      "name": "Axe",
+      "damage": 5,
+      "attack_range": 1,
+      "projectile_kind": -1,
+      "description": "Heavy chopping weapon. Hits hard."
+    },
+    "DAGGER": {
+      "name": "Dagger",
+      "damage": 2,
+      "attack_range": 1,
+      "projectile_kind": -1,
+      "description": "Light and fast. Low damage."
+    },
+    "SPEAR": {
+      "name": "Spear",
+      "damage": 3,
+      "attack_range": 2,
+      "projectile_kind": 0,
+      "description": "Reach weapon. Attacks 2 hexes away."
+    },
+    "WARHAMMER": {
+      "name": "Warhammer",
+      "damage": 6,
+      "attack_range": 1,
+      "projectile_kind": -1,
+      "description": "Massive bludgeon. Crushes armour."
+    },
+    "SHORT_BOW": {
+      "name": "Short Bow",
+      "damage": 2,
+      "attack_range": 3,
+      "projectile_kind": 0,
+      "description": "Compact bow. Short range, quick draw."
+    },
+    "LONG_BOW": {
+      "name": "Long Bow",
+      "damage": 3,
+      "attack_range": 5,
+      "projectile_kind": 0,
+      "description": "Tall bow with excellent range."
+    },
+    "CROSSBOW": {
+      "name": "Crossbow",
+      "damage": 5,
+      "attack_range": 4,
+      "projectile_kind": 0,
+      "description": "Mechanically powerful. High damage."
+    },
+    "JAVELIN": {
+      "name": "Javelin",
+      "damage": 3,
+      "attack_range": 2,
+      "projectile_kind": 0,
+      "description": "Thrown spear. Short range."
+    },
+    "FIREBALL_STAFF": {
+      "name": "Fireball Staff",
+      "damage": 4,
+      "attack_range": 3,
+      "projectile_kind": 1,
+      "description": "Magical staff. Lobs fireballs over terrain."
+    },
+    "THUNDER_STAFF": {
+      "name": "Thunder Staff",
+      "damage": 6,
+      "attack_range": 4,
+      "projectile_kind": 1,
+      "description": "Powerful arcane staff. High damage arc shots."
+    }
+  },
+
+  "armors": {
+    "NONE":    { "name": "No Armor",      "damage_reduction": 0, "description": "Unarmored." },
+    "LEATHER": { "name": "Leather Armor", "damage_reduction": 1, "description": "Light protection. -1 damage." },
+    "CHAIN":   { "name": "Chainmail",     "damage_reduction": 2, "description": "Medium protection. -2 damage." },
+    "PLATE":   { "name": "Plate Armor",   "damage_reduction": 3, "description": "Heavy plate. -3 damage." }
+  },
+
+  "helmets": {
+    "NONE":       { "name": "No Helmet",   "damage_reduction": 0, "description": "No head protection." },
+    "CAP":        { "name": "Leather Cap", "damage_reduction": 1, "description": "Basic head cover. -1 damage." },
+    "COIF":       { "name": "Chain Coif",  "damage_reduction": 1, "description": "Chain hood. -1 damage." },
+    "GREAT_HELM": { "name": "Great Helm",  "damage_reduction": 2, "description": "Full face helmet. -2 damage." }
+  },
+
+  "steeds": {
+    "NONE": {
+      "name": "Unmounted",
+      "move_range": 0,
+      "base_costs": {},
+      "description": "On foot."
+    },
+    "HORSE": {
+      "name": "Horse",
+      "move_range": 6,
+      "base_costs": { "0": 1, "1": 2, "2": 99, "3": 99 },
+      "description": "Fast on open ground. Poor in rough terrain."
+    },
+    "WARHORSE": {
+      "name": "Warhorse",
+      "move_range": 5,
+      "base_costs": { "0": 1, "1": 2, "2": 99, "3": 99 },
+      "description": "Armoured destrier. Slower but sturdier than a horse."
+    },
+    "WOLF": {
+      "name": "Wolf",
+      "move_range": 6,
+      "base_costs": { "0": 1, "1": 1, "2": 2, "3": 99 },
+      "description": "Goblin mount. Nimble across all land terrain."
+    },
+    "BEAR": {
+      "name": "Bear",
+      "move_range": 4,
+      "base_costs": { "0": 1, "1": 1, "2": 2, "3": 2 },
+      "description": "Slow but handles nearly any terrain."
+    },
+    "EAGLE": {
+      "name": "Eagle",
+      "move_range": 7,
+      "base_costs": { "0": 1, "1": 1, "2": 1, "3": 1 },
+      "description": "Aerial mount. Ignores all terrain costs."
+    }
+  }
+}

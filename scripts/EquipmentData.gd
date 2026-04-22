@@ -1,194 +1,174 @@
 ## EquipmentData.gd
 ## Central registry for all equippable items.
 ##
-## WEAPONS  — held in two slots (primary / secondary).
-##            Each weapon has damage, attack range, and projectile kind.
-##            Melee weapons: range 1, no projectile.
-##            Ranged weapons: range > 1, ARROW or ARC projectile kind.
+## DATA SOURCE
+## ───────────
+##   All item definitions live in  res://data/equipment.json
+##   and are loaded once on first access (lazy singleton pattern).
 ##
-## ARMOR    — worn on body. Reduces incoming damage by `damage_reduction`.
+##   JSON projectile_kind values:  0 = ARROW,  1 = ARC,  -1 = none/melee
+##   JSON base_costs / steed base_costs keys are strings ("0".."3") because
+##   JSON only allows string keys — they are converted to int on load.
 ##
-## HELMETS  — worn on head. Reduces incoming damage by `damage_reduction`.
-##            Armor + Helmet reductions stack additively.
-##
-## STEEDS   — mounted animal. While mounted the unit uses the steed's
-##            move_range and base_costs instead of its own.
+## ENUMS
+##   The enums below are kept in GDScript so the rest of the codebase can
+##   continue to use  EquipmentData.WeaponType.SWORD  etc.  The string keys
+##   in the JSON match the enum member names exactly.
 
 class_name EquipmentData
 
 # ═══════════════════════════════════════════════════════════════════
-# Enums
+# Enums  (names must match JSON keys exactly)
 # ═══════════════════════════════════════════════════════════════════
 
 enum WeaponType {
 	NONE,
-	# Melee
 	SWORD, AXE, DAGGER, SPEAR, WARHAMMER,
-	# Ranged
 	SHORT_BOW, LONG_BOW, CROSSBOW, JAVELIN, FIREBALL_STAFF, THUNDER_STAFF,
 }
 
 enum ArmorType {
 	NONE,
-	LEATHER,   # -1 dmg
-	CHAIN,     # -2 dmg
-	PLATE,     # -3 dmg
+	LEATHER,
+	CHAIN,
+	PLATE,
 }
 
 enum HelmetType {
 	NONE,
-	CAP,        # -1 dmg
-	COIF,       # -1 dmg
-	GREAT_HELM, # -2 dmg
+	CAP,
+	COIF,
+	GREAT_HELM,
 }
 
 enum SteedType {
 	NONE,
-	HORSE,      # fast on flat
-	WARHORSE,   # heavy cavalry
-	WOLF,       # goblin mount, good in forests/mountains
-	BEAR,       # slow, all-terrain
-	EAGLE,      # aerial, all terrain cost 1
+	HORSE,
+	WARHORSE,
+	WOLF,
+	BEAR,
+	EAGLE,
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# Weapon data
+# Data file path
 # ═══════════════════════════════════════════════════════════════════
 
-const WEAPONS: Dictionary = {
-	WeaponType.NONE: {
-		"name": "Unarmed", "damage": 1, "attack_range": 1,
-		"projectile_kind": -1, "description": "No weapon equipped.",
-	},
-	WeaponType.SWORD: {
-		"name": "Sword", "damage": 3, "attack_range": 1,
-		"projectile_kind": -1, "description": "Reliable one-handed blade.",
-	},
-	WeaponType.AXE: {
-		"name": "Axe", "damage": 5, "attack_range": 1,
-		"projectile_kind": -1, "description": "Heavy chopping weapon. Hits hard.",
-	},
-	WeaponType.DAGGER: {
-		"name": "Dagger", "damage": 2, "attack_range": 1,
-		"projectile_kind": -1, "description": "Light and fast. Low damage.",
-	},
-	WeaponType.SPEAR: {
-		"name": "Spear", "damage": 3, "attack_range": 2,
-		"projectile_kind": ProjectileData.Kind.ARROW,
-		"description": "Reach weapon. Attacks 2 hexes away.",
-	},
-	WeaponType.WARHAMMER: {
-		"name": "Warhammer", "damage": 6, "attack_range": 1,
-		"projectile_kind": -1, "description": "Massive bludgeon. Crushes armour.",
-	},
-	WeaponType.SHORT_BOW: {
-		"name": "Short Bow", "damage": 2, "attack_range": 3,
-		"projectile_kind": ProjectileData.Kind.ARROW,
-		"description": "Compact bow. Short range, quick draw.",
-	},
-	WeaponType.LONG_BOW: {
-		"name": "Long Bow", "damage": 3, "attack_range": 5,
-		"projectile_kind": ProjectileData.Kind.ARROW,
-		"description": "Tall bow with excellent range.",
-	},
-	WeaponType.CROSSBOW: {
-		"name": "Crossbow", "damage": 5, "attack_range": 4,
-		"projectile_kind": ProjectileData.Kind.ARROW,
-		"description": "Mechanically powerful. High damage.",
-	},
-	WeaponType.JAVELIN: {
-		"name": "Javelin", "damage": 3, "attack_range": 2,
-		"projectile_kind": ProjectileData.Kind.ARROW,
-		"description": "Thrown spear. Short range.",
-	},
-	WeaponType.FIREBALL_STAFF: {
-		"name": "Fireball Staff", "damage": 4, "attack_range": 3,
-		"projectile_kind": ProjectileData.Kind.ARC,
-		"description": "Magical staff. Lobs fireballs over terrain.",
-	},
-	WeaponType.THUNDER_STAFF: {
-		"name": "Thunder Staff", "damage": 6, "attack_range": 4,
-		"projectile_kind": ProjectileData.Kind.ARC,
-		"description": "Powerful arcane staff. High damage arc shots.",
-	},
-}
+const DATA_PATH := "res://data/equipment.json"
 
 # ═══════════════════════════════════════════════════════════════════
-# Armor data
+# Runtime cache  (populated once, then reused)
 # ═══════════════════════════════════════════════════════════════════
 
-const ARMORS: Dictionary = {
-	ArmorType.NONE:    { "name": "No Armor",     "damage_reduction": 0, "description": "Unarmored." },
-	ArmorType.LEATHER: { "name": "Leather Armor", "damage_reduction": 1, "description": "Light protection. −1 damage." },
-	ArmorType.CHAIN:   { "name": "Chainmail",     "damage_reduction": 2, "description": "Medium protection. −2 damage." },
-	ArmorType.PLATE:   { "name": "Plate Armor",   "damage_reduction": 3, "description": "Heavy plate. −3 damage." },
-}
+# Typed lookup tables keyed by enum int value.
+# Populated lazily on the first call to any public accessor.
+static var WEAPONS:  Dictionary = {}   # WeaponType  (int) → Dictionary
+static var ARMORS:   Dictionary = {}   # ArmorType   (int) → Dictionary
+static var HELMETS:  Dictionary = {}   # HelmetType  (int) → Dictionary
+static var STEEDS:   Dictionary = {}   # SteedType   (int) → Dictionary
+
+static var _loaded: bool = false
+
 
 # ═══════════════════════════════════════════════════════════════════
-# Helmet data
+# Loader
 # ═══════════════════════════════════════════════════════════════════
 
-const HELMETS: Dictionary = {
-	HelmetType.NONE:       { "name": "No Helmet",    "damage_reduction": 0, "description": "No head protection." },
-	HelmetType.CAP:        { "name": "Leather Cap",  "damage_reduction": 1, "description": "Basic head cover. −1 damage." },
-	HelmetType.COIF:       { "name": "Chain Coif",   "damage_reduction": 1, "description": "Chain hood. −1 damage." },
-	HelmetType.GREAT_HELM: { "name": "Great Helm",   "damage_reduction": 2, "description": "Full face helmet. −2 damage." },
-}
+## Load and parse equipment.json into the four lookup tables.
+## Safe to call multiple times — returns immediately if already loaded.
+static func ensure_loaded() -> void:
+	if _loaded:
+		return
+
+	var file := FileAccess.open(DATA_PATH, FileAccess.READ)
+	if file == null:
+		push_error("EquipmentData: cannot open %s" % DATA_PATH)
+		return
+
+	var json  := JSON.new()
+	var err   := json.parse(file.get_as_text())
+	file.close()
+
+	if err != OK:
+		push_error("EquipmentData: JSON parse error in %s — %s" % [DATA_PATH, json.get_error_message()])
+		return
+
+	var root: Dictionary = json.get_data()
+
+	# ── Weapons ──────────────────────────────────────────────────
+	var wpn_names := WeaponType.keys()   # ["NONE","SWORD","AXE",…]
+	var raw_wpns: Dictionary = root.get("weapons", {})
+	for key in raw_wpns:
+		var idx: int = wpn_names.find(key)
+		if idx == -1:
+			push_warning("EquipmentData: unknown weapon key '%s'" % key)
+			continue
+		WEAPONS[idx] = raw_wpns[key].duplicate(true)
+
+	# ── Armors ───────────────────────────────────────────────────
+	var armor_names := ArmorType.keys()
+	var raw_armor: Dictionary = root.get("armors", {})
+	for key in raw_armor:
+		var idx: int = armor_names.find(key)
+		if idx == -1:
+			push_warning("EquipmentData: unknown armor key '%s'" % key)
+			continue
+		ARMORS[idx] = raw_armor[key].duplicate(true)
+
+	# ── Helmets ──────────────────────────────────────────────────
+	var helmet_names := HelmetType.keys()
+	var raw_helm: Dictionary = root.get("helmets", {})
+	for key in raw_helm:
+		var idx: int = helmet_names.find(key)
+		if idx == -1:
+			push_warning("EquipmentData: unknown helmet key '%s'" % key)
+			continue
+		HELMETS[idx] = raw_helm[key].duplicate(true)
+
+	# ── Steeds ───────────────────────────────────────────────────
+	var steed_names := SteedType.keys()
+	var raw_steed: Dictionary = root.get("steeds", {})
+	for key in raw_steed:
+		var idx: int = steed_names.find(key)
+		if idx == -1:
+			push_warning("EquipmentData: unknown steed key '%s'" % key)
+			continue
+		var entry: Dictionary = raw_steed[key].duplicate(true)
+		# Convert string keys in base_costs back to int
+		var int_costs: Dictionary = {}
+		for k in entry.get("base_costs", {}):
+			int_costs[int(k)] = int(entry["base_costs"][k])
+		entry["base_costs"] = int_costs
+		STEEDS[idx] = entry
+
+	_loaded = true
+
 
 # ═══════════════════════════════════════════════════════════════════
-# Steed data
-# ═══════════════════════════════════════════════════════════════════
-
-## "move_range"  — movement budget while mounted
-## "base_costs"  — terrain entry costs (keys = TerrainData.Base int)
-const STEEDS: Dictionary = {
-	SteedType.NONE: {
-		"name": "Unmounted", "move_range": 0, "base_costs": {},
-		"description": "On foot.",
-	},
-	SteedType.HORSE: {
-		"name": "Horse", "move_range": 6,
-		"base_costs": { 0: 1, 1: 2, 2: 99, 3: 99 },
-		"description": "Fast on open ground. Poor in rough terrain.",
-	},
-	SteedType.WARHORSE: {
-		"name": "Warhorse", "move_range": 5,
-		"base_costs": { 0: 1, 1: 2, 2: 99, 3: 99 },
-		"description": "Armoured destrier. Slower but sturdier than a horse.",
-	},
-	SteedType.WOLF: {
-		"name": "Wolf", "move_range": 6,
-		"base_costs": { 0: 1, 1: 1, 2: 2, 3: 99 },
-		"description": "Goblin mount. Nimble across all land terrain.",
-	},
-	SteedType.BEAR: {
-		"name": "Bear", "move_range": 4,
-		"base_costs": { 0: 1, 1: 1, 2: 2, 3: 2 },
-		"description": "Slow but handles nearly any terrain.",
-	},
-	SteedType.EAGLE: {
-		"name": "Eagle", "move_range": 7,
-		"base_costs": { 0: 1, 1: 1, 2: 1, 3: 1 },
-		"description": "Aerial mount. Ignores all terrain costs.",
-	},
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# Static helpers
+# Public accessors
+## All functions call ensure_loaded() first so callers need not worry
+## about init order.
 # ═══════════════════════════════════════════════════════════════════
 
 static func weapon_info(w: WeaponType) -> Dictionary:
-	return WEAPONS[w]
+	ensure_loaded()
+	return WEAPONS.get(int(w), {})
 
 static func armor_info(a: ArmorType) -> Dictionary:
-	return ARMORS[a]
+	ensure_loaded()
+	return ARMORS.get(int(a), {})
 
 static func helmet_info(h: HelmetType) -> Dictionary:
-	return HELMETS[h]
+	ensure_loaded()
+	return HELMETS.get(int(h), {})
 
 static func steed_info(s: SteedType) -> Dictionary:
-	return STEEDS[s]
+	ensure_loaded()
+	return STEEDS.get(int(s), {})
 
 ## Total passive damage reduction from armor + helmet combined.
 static func total_reduction(armor: ArmorType, helmet: HelmetType) -> int:
-	return ARMORS[armor]["damage_reduction"] + HELMETS[helmet]["damage_reduction"]
+	ensure_loaded()
+	var a: int = ARMORS.get(int(armor), {}).get("damage_reduction", 0)
+	var h: int = HELMETS.get(int(helmet), {}).get("damage_reduction", 0)
+	return a + h
