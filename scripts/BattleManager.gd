@@ -42,6 +42,10 @@ signal battle_ended(victory: bool)
 signal status_changed(text: String)
 signal phase_changed(new_phase: Phase)
 
+var _pending_attacker: BaseUnit = null
+var _pending_defender: BaseUnit = null
+var _weapon_menu: VBoxContainer = null
+
 
 # ════════════════════════════════════════════════════════════════════
 # Setup
@@ -418,35 +422,120 @@ func _process_enemy(living: Array[BaseUnit], idx: int) -> void:
 	get_tree().create_timer(0.55).timeout.connect(
 		func() -> void: _process_enemy(living, idx + 1))
 
+# weapon selection
+func _show_weapon_selection(attacker: BaseUnit, defender: BaseUnit) -> void:
+	_pending_attacker = attacker
+	_pending_defender = defender
+	
+	# Clean up any existing menu
+	if _weapon_menu and is_instance_valid(_weapon_menu.get_parent()):
+		_weapon_menu.get_parent().queue_free()
+	
+	var panel = PanelContainer.new()
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.1, 0.1, 0.1, 0.9)
+	style.set_border_width_all(2)
+	style.border_color = Color(0.5, 0.5, 0.5)
+	panel.add_theme_stylebox_override("panel", style)
+
+	_weapon_menu = VBoxContainer.new()
+	_weapon_menu.custom_minimum_size = Vector2(160, 0)
+	panel.add_child(_weapon_menu)
+	
+	# ADD TO SCENE FIRST so we can calculate its size
+	add_child(panel)
+	
+	# Wait for Godot to layout the buttons to get the real 'panel.size'
+	await get_tree().process_frame
+	
+	if not is_instance_valid(panel): return
+
+	# Center horizontally, place height + offset above unit
+	panel.global_position = attacker.global_position + Vector2(
+		-(panel.size.x / 2), 
+		-panel.size.y - 200
+	)
+
+	# --- MENU CONTENT ---
+	var label = Label.new()
+	label.text = "ATTACK WITH:"
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_weapon_menu.add_child(label)
+	
+	for slot in [BaseUnit.WeaponSlot.PRIMARY, BaseUnit.WeaponSlot.SECONDARY]:
+		var wpn_id = attacker.primary_weapon if slot == BaseUnit.WeaponSlot.PRIMARY else attacker.secondary_weapon
+		var info = EquipmentData.weapon_info(wpn_id)
+		
+		if info.is_empty() or wpn_id == EquipmentData.WeaponType.NONE: continue
+		
+		var btn = Button.new()
+		var prop = " [PUSH]" if info.get("push", false) else ""
+		# Display Name and Damage clearly
+		btn.text = "%s (Dmg: %d)%s" % [info["name"], info["damage"], prop]
+		btn.pressed.connect(_on_weapon_chosen.bind(slot))
+		_weapon_menu.add_child(btn)
+	
+	var cancel = Button.new()
+	cancel.text = "Cancel"
+	cancel.pressed.connect(func(): panel.queue_free())
+	_weapon_menu.add_child(cancel)
+	
+func _on_weapon_chosen(slot: int) -> void:
+	_pending_attacker.active_weapon = slot
+	
+	# Delete the PanelContainer (the parent of the VBox)
+	if _weapon_menu:
+		var panel = _weapon_menu.get_parent()
+		if panel is PanelContainer:
+			panel.queue_free()
+		else:
+			_weapon_menu.queue_free()
+	
+	_do_attack(_pending_attacker, _pending_defender)
+
+func _get_active_weapon_info(u: BaseUnit) -> Dictionary:
+	var wpn_id = u.primary_weapon if u.active_weapon == BaseUnit.WeaponSlot.PRIMARY else u.secondary_weapon
+	return EquipmentData.weapon_info(wpn_id)
+
+func _get_projectile_kind(unit: BaseUnit) -> int:
+	var wpn_id = unit.primary_weapon if unit.active_weapon == BaseUnit.WeaponSlot.PRIMARY else unit.secondary_weapon
+	return EquipmentData.weapon_info(wpn_id).get("projectile_kind", -1)
 
 # ════════════════════════════════════════════════════════════════════
 # Player input
 # ════════════════════════════════════════════════════════════════════
 
 func handle_hex_click(hex: Vector2i) -> void:
-	if phase != Phase.PLAYER:
-		return
-	var clicked_unit: BaseUnit = _unit_at(hex)
+	if phase != Phase.PLAYER: return
+	var clicked_unit = _unit_at(hex)
+	
+	if _weapon_menu and is_instance_valid(_weapon_menu.get_parent()):
+		_weapon_menu.get_parent().queue_free()
+		
+	# 1. ATTACK INTERCEPT: If an enemy is clicked and it's in range of our selected unit
+	if selected_unit != null and clicked_unit != null:
+		if clicked_unit.faction != selected_unit.faction and hex in attackable_hexes:
+			_show_weapon_selection(selected_unit, clicked_unit)
+			return
 
+	# 2. SELECTION: If we clicked one of our own units
 	if clicked_unit != null and clicked_unit.faction == UnitData.Faction.PLAYER \
 			and clicked_unit.is_alive:
 		_select_unit(clicked_unit)
 		return
 
-	if selected_unit != null and hex in attackable_hexes:
-		if clicked_unit != null and clicked_unit.faction == UnitData.Faction.ENEMY:
-			_do_attack(selected_unit, clicked_unit)
-			return
-		# Ranged unit clicking an attackable hex with no enemy — fire anyway (miss)
+	# 3. RANGED MISS: If we clicked an empty attackable tile with a ranged unit
+	if selected_unit != null and hex in attackable_hexes and clicked_unit == null:
 		if selected_unit.attack_range > 1 and not selected_unit.has_attacked:
 			_do_ranged_attack_at(selected_unit, hex)
 			return
 
-	if selected_unit != null and reachable_hexes.has(hex) \
-			and _unit_at(hex) == null:
+	# 4. MOVEMENT: If we clicked an empty reachable tile
+	if selected_unit != null and reachable_hexes.has(hex) and clicked_unit == null:
 		_do_move(selected_unit, hex)
 		return
 
+	# 5. DESELECT: Clicked background or invalid target
 	_deselect()
 
 
@@ -454,8 +543,17 @@ func _select_unit(u: BaseUnit) -> void:
 	_deselect()
 	selected_unit = u
 	_highlight_for(u)
+	
+	# Use the current active weapon damage for the status text
+	var wpn = EquipmentData.weapon_info(
+		u.primary_weapon if u.active_weapon == BaseUnit.WeaponSlot.PRIMARY 
+		else u.secondary_weapon
+	)
+	var dmg = wpn.get("damage", u.attack)
+	
 	_set_status("%s selected — HP %d/%d  Moves %d  ATK %d" % [
-		u.unit_name, u.hp, u.hp_max, u.moves_left, u.attack])
+		u.unit_name, u.hp, u.hp_max, u.moves_left, dmg])
+		
 	if tiles.has(u.hex_pos):
 		tiles[u.hex_pos].set_selected(true)
 
@@ -495,39 +593,52 @@ func _highlight_for(u: BaseUnit) -> void:
 	_clear_highlights()
 	attackable_hexes.clear()
 
+	# 1. Handle Movement Highlights
 	if u.moves_left > 0:
-		reachable_hexes = HexGrid.reachable_weighted(
-			u.hex_pos, u.moves_left, _cost_fn(u))
+		reachable_hexes = HexGrid.reachable_weighted(u.hex_pos, u.moves_left, _cost_fn(u))
 		reachable_hexes.erase(u.hex_pos)
 		for hex in reachable_hexes:
 			if tiles.has(hex):
 				tiles[hex].set_reachable(true)
 
+	# 2. Handle Attack Highlights (Check BOTH weapons)
 	if not u.has_attacked:
-		var atk_range: int = u.attack_range
-		var kind: int      = EquipmentData.WEAPONS[
-			u.primary_weapon if u.active_weapon == BaseUnit.WeaponSlot.PRIMARY
-			else u.secondary_weapon]["projectile_kind"]
+		# We check both Primary and Secondary slots to show total threat
+		for slot in [BaseUnit.WeaponSlot.PRIMARY, BaseUnit.WeaponSlot.SECONDARY]:
+			var wpn_id = u.primary_weapon if slot == BaseUnit.WeaponSlot.PRIMARY else u.secondary_weapon
+			var info = EquipmentData.weapon_info(wpn_id)
+			
+			if info.is_empty() or wpn_id == EquipmentData.WeaponType.NONE:
+				continue
+			
+			var atk_range: int = info.get("attack_range", 1)
+			var kind: int = info.get("projectile_kind", -1)
 
-		if atk_range <= 1:
-			# Melee — only adjacent enemies
-			for nb in HexGrid.neighbors(u.hex_pos):
-				var t: BaseUnit = _unit_at(nb)
-				if t != null and t.faction == UnitData.Faction.ENEMY and t.is_alive:
-					attackable_hexes.append(nb)
-					if tiles.has(nb):
-						tiles[nb].set_attack_target(true)
-		else:
-			# Ranged — all enemy hexes within attack_range with valid LOS/arc
-			for r in range(1, atk_range + 1):
-				for hex in HexGrid.ring(u.hex_pos, r):
-					var t: BaseUnit = _unit_at(hex)
-					if t == null or t.faction != UnitData.Faction.ENEMY or not t.is_alive:
-						continue
-					if kind == ProjectileData.Kind.ARC or _arrow_reaches(u.hex_pos, hex) == hex:
-						attackable_hexes.append(hex)
-						if tiles.has(hex):
-							tiles[hex].set_attack_target(true)
+			if atk_range <= 1:
+				# Melee Logic for this weapon
+				for nb in HexGrid.neighbors(u.hex_pos):
+					var t: BaseUnit = _unit_at(nb)
+					if t != null and t.faction == UnitData.Faction.ENEMY and t.is_alive:
+						if not nb in attackable_hexes:
+							attackable_hexes.append(nb)
+							if tiles.has(nb):
+								tiles[nb].set_attack_target(true)
+			else:
+				# Ranged Logic for this weapon (e.g. Wind Staff)
+				for r in range(1, atk_range + 1):
+					for hex in HexGrid.ring(u.hex_pos, r):
+						var t: BaseUnit = _unit_at(hex)
+						# We only highlight if there is an ENEMY there
+						if t == null or t.faction != UnitData.Faction.ENEMY or not t.is_alive:
+							continue
+						
+						# Check Line of Sight (0 = Arrow) or Arc (1 = Magic)
+						# Kind 1 (ARC) hits directly, Kind 0 (ARROW) uses LOS check
+						if kind == 1 or _arrow_reaches(u.hex_pos, hex) == hex:
+							if not hex in attackable_hexes:
+								attackable_hexes.append(hex)
+								if tiles.has(hex):
+									tiles[hex].set_attack_target(true)
 
 
 func _clear_highlights() -> void:
@@ -546,25 +657,44 @@ func _clear_highlights() -> void:
 # ════════════════════════════════════════════════════════════════════
 
 func _do_attack(attacker: BaseUnit, defender: BaseUnit) -> void:
-	if attacker.has_attacked:
-		_set_status("%s already attacked this turn!" % attacker.unit_name)
-		return
- 
-	var atk_range: int = attacker.attack_range
+	if attacker.has_attacked: return
+	
+	var wpn = _get_active_weapon_info(attacker)
+	var atk_range: int = wpn.get("attack_range", 1)
 
 	if atk_range <= 1:
-		# Melee — instant
+		# Melee Logic
 		attacker.has_attacked = true
-		defender.take_damage(attacker.attack)
-		_set_status("%s attacks %s for %d! (%d HP left)" % [
-			attacker.unit_name, defender.unit_name, attacker.attack, defender.hp])
+		var dmg = wpn.get("damage", 1)
+		defender.take_damage(dmg)
+		_set_status("%s hits %s for %d!" % [attacker.unit_name, defender.unit_name, dmg])
+		
+		if wpn.get("push", false):
+			push(attacker, defender)
+			
 		_clear_highlights()
-		if selected_unit != null:
-			_highlight_for(selected_unit)
 		_check_game_over()
 	else:
-		# Ranged — fire projectile, damage on landing
+		# Ranged Logic
 		_do_ranged_attack_at(attacker, defender.hex_pos)
+		
+
+func push(attacker: BaseUnit, target: BaseUnit) -> void:
+	var diff: Vector2i = target.hex_pos - attacker.hex_pos
+	var x: float = float(diff.x)
+	var z: float = float(diff.y)
+	var dist: float = max(abs(x), max(abs(-x-z), abs(z)))
+	
+	if dist == 0.0: return
+	
+	var dir := Vector2i(int(round(x / dist)), int(round(z / dist)))
+	var destination: Vector2i = target.hex_pos + dir
+	
+	if tiles.has(destination) and _unit_at(destination) == null:
+		target.hex_pos = destination
+		var target_pos = HexGrid.axial_to_world(destination, HEX_SIZE)
+		var tween = create_tween()
+		tween.tween_property(target, "position", target_pos, 0.2).set_trans(Tween.TRANS_SINE)
 
 # ════════════════════════════════════════════════════════════════════
 # Combat — ranged
@@ -573,85 +703,67 @@ func _do_attack(attacker: BaseUnit, defender: BaseUnit) -> void:
 ## Fire a projectile from `attacker` toward `target_hex`.
 ## For ARROW: compute where the line is blocked and land there.
 ## For ARC:   always land on target_hex.
+
 func _do_ranged_attack_at(attacker: BaseUnit, target_hex: Vector2i) -> void:
-	if attacker.has_attacked:
-		return
-	attacker.has_attacked = true
-	_clear_highlights()
- 
-	var kind: int      = EquipmentData.WEAPONS[
-		attacker.primary_weapon if attacker.active_weapon == BaseUnit.WeaponSlot.PRIMARY
-		else attacker.secondary_weapon]["projectile_kind"]
-	var landed_hex: Vector2i
- 
-	if kind == ProjectileData.Kind.ARC:
-		landed_hex = target_hex                        # always reaches
-	else:
-		# ARROW: find first blocking hex on the line
-		var blocked := _arrow_reaches(attacker.hex_pos, target_hex)
-		landed_hex = blocked
- 
-	var from_world: Vector2 = HexGrid.axial_to_world(attacker.hex_pos, HEX_SIZE)
-	var to_world:   Vector2 = HexGrid.axial_to_world(landed_hex, HEX_SIZE)
- 
-	var proj := Projectile.new()
-	proj.position = Vector2.ZERO   # drawn relative to world origin via _from offset
-	unit_layer.add_child(proj)
- 
-	var proj_color: Color = UnitData.UNITS[attacker.unit_type]["trim_color"]
-	proj.fire(from_world, to_world,
-			  kind as ProjectileData.Kind,
-			  proj_color,
-			  landed_hex if landed_hex != target_hex else Vector2i(-1, -1))
- 
-	var attacker_ref := attacker   # capture for lambda
-	var landed_ref   := landed_hex
-	proj.landed.connect(func(blocked_hex: Vector2i) -> void:
-		_on_projectile_landed(attacker_ref, landed_ref))
- 
+	_do_ranged_attack_at_from(attacker, target_hex, attacker.hex_pos)
 
-## Variant used by AI: fire_origin can differ from attacker.hex_pos (phantom attacks)
 func _do_ranged_attack_at_from(attacker: BaseUnit, target_hex: Vector2i, fire_origin: Vector2i) -> void:
-	var kind: int = EquipmentData.WEAPONS[
-		attacker.primary_weapon if attacker.active_weapon == BaseUnit.WeaponSlot.PRIMARY
-		else attacker.secondary_weapon]["projectile_kind"]
+	if attacker.has_attacked: return
+	attacker.has_attacked = true
+	
+	var wpn = _get_active_weapon_info(attacker)
+	var kind: int = wpn.get("projectile_kind", 0)
+	
+	# Calculate where it hits (handling LOS for arrows)
 	var landed_hex: Vector2i
-	if kind == ProjectileData.Kind.ARC:
+	if kind == 1: # ARC / MAGE
 		landed_hex = target_hex
-	else:
+	else: # ARROW / LINE
 		landed_hex = _arrow_reaches(fire_origin, target_hex)
-
-	var from_world: Vector2 = HexGrid.axial_to_world(fire_origin, HEX_SIZE)
-	var to_world:   Vector2 = HexGrid.axial_to_world(landed_hex, HEX_SIZE)
-
-	var proj := Projectile.new()
+	
+	var from_world := HexGrid.axial_to_world(fire_origin, HEX_SIZE)
+	var to_world   := HexGrid.axial_to_world(landed_hex, HEX_SIZE)
+	
+	# CORRECT PROJECTILE SPAWNING
+	var proj = Projectile.new()
 	proj.position = Vector2.ZERO
 	unit_layer.add_child(proj)
+	
+	# Get unit color safely for the trail
+	var proj_color = Color.WHITE
+	var unit_data = UnitData.UNITS.get(int(attacker.unit_type), {})
+	if unit_data.has("trim_color"):
+		var c = unit_data["trim_color"]
+		proj_color = Color(c[0], c[1], c[2], c[3])
 
-	var proj_color: Color = UnitData.UNITS[attacker.unit_type]["trim_color"]
-	proj.fire(from_world, to_world,
-			  kind as ProjectileData.Kind,
-			  proj_color,
-			  landed_hex if landed_hex != target_hex else Vector2i(-1, -1))
-
+	# Use your existing .fire() method
+	# The last argument handles the 'blocked' visual if it hit a wall/unit early
+	proj.fire(from_world, to_world, kind, proj_color, landed_hex if landed_hex != target_hex else Vector2i(-1, -1))
+	
 	var attacker_ref := attacker
 	var landed_ref   := landed_hex
-	proj.landed.connect(func(_blocked: Vector2i) -> void:
-		_on_projectile_landed(attacker_ref, landed_ref))
-
+	
+	proj.landed.connect(func(_blocked_hex: Vector2i):
+		_on_projectile_landed(attacker_ref, landed_ref)
+	)
 
 func _on_projectile_landed(attacker: BaseUnit, landed_hex: Vector2i) -> void:
-	var target: BaseUnit = _unit_at(landed_hex)
-	if target != null and target.faction != attacker.faction and target.is_alive:
-		target.take_damage(attacker.attack)
-		_set_status("%s fires at %s for %d! (%d HP left)" % [
-			attacker.unit_name, target.unit_name, attacker.attack, target.hp])
-	else:
-		_set_status("%s fires — no target at destination." % attacker.unit_name)
- 
-	if selected_unit != null:
-		_highlight_for(selected_unit)
+	var target = _unit_at(landed_hex)
+	var wpn = _get_active_weapon_info(attacker)
+	
+	if target and target.faction != attacker.faction:
+		target.take_damage(wpn.get("damage", 0))
+		
+		# THIS IS THE PUSH TRIGGER
+		if wpn.get("push", false):
+			_set_status("Wind blast pushes %s!" % target.unit_name)
+			push(attacker, target)
+
 	_check_game_over()
+	_highlight_for(attacker)
+
+## Variant used by AI: fire_origin can differ from attacker.hex_pos (phantom attacks)
+
  
  
 ## Walk the hex line from `origin` (exclusive) to `goal` (inclusive).
@@ -734,17 +846,19 @@ func _execute_intent(enemy: BaseUnit, intent: Dictionary) -> void:
 
 
 func _ai_attack(enemy: BaseUnit, target: BaseUnit, fire_from: Vector2i = Vector2i(-1, -1)) -> void:
-	if not target.is_alive or enemy.has_attacked:
-		return
-	enemy.has_attacked = true
-	var atk_range: int = enemy.attack_range
+	if not target.is_alive or enemy.has_attacked: return
+	
+	var wpn = _get_active_weapon_info(enemy)
+	var atk_range: int = wpn.get("attack_range", 1)
+	
 	if atk_range <= 1:
-		# Melee — instant damage
-		target.take_damage(enemy.attack)
-		_set_status("%s attacks %s for %d! (%d HP)" % [
-			enemy.unit_name, target.unit_name, enemy.attack, target.hp])
+		enemy.has_attacked = true
+		target.take_damage(wpn.get("damage", 1))
+		_set_status("%s attacks %s for %d!" % [enemy.unit_name, target.unit_name, wpn.get("damage", 1)])
+		
+		if wpn.get("push", false):
+			push(enemy, target)
 	else:
-		# Ranged — fire projectile from fire_from (or enemy.hex_pos as fallback)
 		var origin: Vector2i = fire_from if fire_from != Vector2i(-1, -1) else enemy.hex_pos
 		_do_ranged_attack_at_from(enemy, target.hex_pos, origin)
 

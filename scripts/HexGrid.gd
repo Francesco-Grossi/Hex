@@ -4,8 +4,12 @@ class_name HexGrid
 
 # Directions for Flat-top axial neighbors
 const DIRECTIONS: Array[Vector2i] = [
-	Vector2i(1, 0), Vector2i(0, -1), Vector2i(-1, -1),
-	Vector2i(-1, 0), Vector2i(0, 1), Vector2i(1, 1)
+	Vector2i(1, 0),  # Right
+	Vector2i(1, -1), # Top Right
+	Vector2i(0, -1), # Top Left
+	Vector2i(-1, 0), # Left
+	Vector2i(-1, 1), # Bottom Left
+	Vector2i(0, 1)   # Bottom Right
 ]
 
 ## Convert axial hex coord → world pixel position (Flat-top math)

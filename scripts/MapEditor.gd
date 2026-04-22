@@ -71,6 +71,53 @@ var _cam_origin:    Vector2 = Vector2.ZERO
 var _pan_threshold: float   = 4.0   # pixels moved before pan activates
 var _pan_moved:     bool    = false  # tracks whether it became a real pan
 
+# Add to variables at the top
+var _undo_stack: Array = []
+
+# --- Undo Logic ---
+
+## Snapshots the current state of all units before an action occurs.
+func _save_undo_state() -> void:
+	var snapshot := []
+	for pos in _editor_units:
+		var u: BaseUnit = _editor_units[pos]
+		snapshot.append({
+			"unit": u,
+			"pos": pos,
+			"hp": u.hp,
+			"has_attacked": u.has_attacked,
+			"moves_left": u.moves_left
+		})
+	_undo_stack.append(snapshot)
+	if _undo_stack.size() > 15: _undo_stack.remove_at(0)
+
+## Reverts units to their previous positions and stats.
+func undo() -> void:
+	if _undo_stack.is_empty():
+		_set_status("Nothing to undo.")
+		return
+	
+	var last_state = _undo_stack.pop_back()
+	_editor_units.clear()
+	
+	for entry in last_state:
+		var u: BaseUnit = entry["unit"]
+		u.hex_pos = entry["pos"]
+		u.hp = entry["hp"]
+		u.has_attacked = entry["has_attacked"]
+		u.moves_left = entry["moves_left"]
+		
+		# Update dictionary and physical position
+		_editor_units[u.hex_pos] = u
+		u.position = HexGrid.axial_to_world(u.hex_pos, HEX_SIZE)
+	
+	queue_redraw()
+	_set_status("Undo performed.")
+	
+	# --- Push Logic ---
+
+## Pushes the target 1 hex away from the attacker.
+
 
 func _ready() -> void:
 	_build_camera()
@@ -182,6 +229,10 @@ func _build_ui() -> void:
 	_tint_btn(_exit_battle_btn, Color(0.40, 0.25, 0.05))
 	_exit_battle_btn.visible = false
 	row1.add_child(_exit_battle_btn)
+	
+	var undo_btn := _make_btn("Undo")
+	undo_btn.pressed.connect(undo)
+	row1.add_child(undo_btn)
 
 	# ── Edit panel (rows 2 & 3): terrain palettes ────────────────────
 	_edit_panel = VBoxContainer.new()
@@ -624,6 +675,7 @@ func _clear_preview() -> void:
 	if _tiles.has(_preview_pos):
 		_tiles[_preview_pos].set_selected(false)
 	_preview_reachable.clear()
+
 
 
 # ════════════════════════════════════════════════════════════════════
