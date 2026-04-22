@@ -1,217 +1,185 @@
 ## UnitInspectPanel.gd
-## A fixed right-side panel that shows full details for a unit when
-## the player right-clicks it.  It lives inside a CanvasLayer so it
-## always renders on top of the map.
+## Right-side panel showing full unit details including equipment.
 ##
-## Usage (from MapEditor or BattleManager):
-##   var panel := UnitInspectPanel.new()
-##   canvas_layer.add_child(panel)
-##   panel.show_unit(some_base_unit)
-##   panel.hide_panel()
+## Layout: VBoxContainer fills the whole panel.
+##   - Fixed header (portrait, name, faction, HP bar)
+##   - ScrollContainer expands to fill remaining space
 
 class_name UnitInspectPanel
 extends Control
 
-# ── Layout constants ─────────────────────────────────────────────────
-const PANEL_WIDTH: float = 220.0
+const PANEL_WIDTH: float = 240.0
 
-# ── Internal nodes ───────────────────────────────────────────────────
-var _bg:            ColorRect
-var _close_btn:     Button
-var _portrait:      TextureRect
-var _portrait_bg:   ColorRect
-var _name_lbl:      Label
-var _faction_lbl:   Label
-var _divider:       ColorRect
-var _hp_bar_bg:     ColorRect
-var _hp_bar_fill:   ColorRect
-var _hp_lbl:        Label
-var _stats_grid:    GridContainer
-var _terrain_title: Label
-var _terrain_grid:  GridContainer
+var _bg:          ColorRect
+var _close_btn:   Button
+var _portrait:    TextureRect
+var _name_lbl:    Label
+var _faction_lbl: Label
+var _hp_bar_bg:   ColorRect
+var _hp_bar_fill: ColorRect
+var _hp_lbl:      Label
 
-# ── Tracked unit ─────────────────────────────────────────────────────
+var _scroll:  ScrollContainer
+var _content: VBoxContainer
+
 var _unit: BaseUnit = null
 
 
 func _ready() -> void:
-	# Panel fills the full viewport height, anchored to the right edge
 	set_anchors_preset(Control.PRESET_RIGHT_WIDE)
 	custom_minimum_size = Vector2(PANEL_WIDTH, 0)
-	size = Vector2(PANEL_WIDTH, 0)          # height set in _notification
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
-
 	_build()
 
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_RESIZED or what == NOTIFICATION_READY:
-		# Keep panel pinned to the right, full height
 		var vp := get_viewport_rect() if get_viewport() else Rect2()
 		if vp.size.y > 0:
-			size = Vector2(PANEL_WIDTH, vp.size.y)
+			size     = Vector2(PANEL_WIDTH, vp.size.y)
 			position = Vector2(vp.size.x - PANEL_WIDTH, 0)
 
 
-# ════════════════════════════════════════════════════════════════════
-# Build UI
-# ════════════════════════════════════════════════════════════════════
-
 func _build() -> void:
-	# ── Dark background ──────────────────────────────────────────────
 	_bg = ColorRect.new()
 	_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_bg.color = Color(0.06, 0.06, 0.09, 0.97)
 	add_child(_bg)
 
-	# Left accent strip
 	var accent := ColorRect.new()
-	accent.size = Vector2(3, 0)
 	accent.set_anchors_preset(Control.PRESET_LEFT_WIDE)
+	accent.size.x = 3
 	accent.color = Color(0.35, 0.55, 1.0, 0.85)
 	add_child(accent)
 
-	# ── Close button (×) ─────────────────────────────────────────────
+	# Root VBoxContainer: header shrinks, scroll expands
+	var root := VBoxContainer.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_theme_constant_override("separation", 0)
+	add_child(root)
+
+	# Header margin wrapper
+	var hm := MarginContainer.new()
+	hm.add_theme_constant_override("margin_left",   12)
+	hm.add_theme_constant_override("margin_right",  12)
+	hm.add_theme_constant_override("margin_top",    10)
+	hm.add_theme_constant_override("margin_bottom", 6)
+	hm.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	root.add_child(hm)
+
+	var header := VBoxContainer.new()
+	header.add_theme_constant_override("separation", 4)
+	hm.add_child(header)
+
+	# Portrait row
+	var portrait_row := HBoxContainer.new()
+	portrait_row.add_theme_constant_override("separation", 10)
+	header.add_child(portrait_row)
+
+	var port_panel := PanelContainer.new()
+	port_panel.custom_minimum_size = Vector2(72, 72)
+	var port_style := StyleBoxFlat.new()
+	port_style.bg_color     = Color(0.12, 0.12, 0.18)
+	port_style.border_color = Color(0.30, 0.30, 0.45)
+	port_style.set_border_width_all(1)
+	port_panel.add_theme_stylebox_override("panel", port_style)
+	portrait_row.add_child(port_panel)
+
+	_portrait = TextureRect.new()
+	_portrait.expand_mode  = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+	_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_portrait.set_anchors_preset(Control.PRESET_FULL_RECT)
+	port_panel.add_child(_portrait)
+
+	var info_col := VBoxContainer.new()
+	info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_col.add_theme_constant_override("separation", 4)
+	portrait_row.add_child(info_col)
+
+	_name_lbl = Label.new()
+	_name_lbl.add_theme_font_size_override("font_size", 17)
+	_name_lbl.add_theme_color_override("font_color", Color(0.92, 0.85, 0.60))
+	_name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_col.add_child(_name_lbl)
+
+	_faction_lbl = Label.new()
+	_faction_lbl.add_theme_font_size_override("font_size", 11)
+	_faction_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_col.add_child(_faction_lbl)
+
 	_close_btn = Button.new()
-	_close_btn.text = "×"
+	_close_btn.text = "× Close"
 	_close_btn.flat = true
-	_close_btn.size = Vector2(30, 30)
-	_close_btn.position = Vector2(PANEL_WIDTH - 36, 6)
-	_close_btn.add_theme_font_size_override("font_size", 20)
+	_close_btn.add_theme_font_size_override("font_size", 11)
 	_close_btn.add_theme_color_override("font_color", Color(0.55, 0.55, 0.60))
 	_close_btn.add_theme_color_override("font_color_hover", Color(1.0, 0.4, 0.4))
 	_close_btn.pressed.connect(hide_panel)
-	add_child(_close_btn)
+	info_col.add_child(_close_btn)
 
-	# ── Portrait area ────────────────────────────────────────────────
-	_portrait_bg = ColorRect.new()
-	_portrait_bg.position = Vector2(14, 14)
-	_portrait_bg.size = Vector2(80, 80)
-	_portrait_bg.color = Color(0.12, 0.12, 0.18)
-	add_child(_portrait_bg)
-
-	# Portrait border
-	var pborder := _make_border(Rect2(13, 13, 82, 82), Color(0.30, 0.30, 0.45))
-	add_child(pborder)
-
-	_portrait = TextureRect.new()
-	_portrait.position = Vector2(14, 14)
-	_portrait.size = Vector2(80, 80)
-	_portrait.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-	_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	add_child(_portrait)
-
-	# ── Name + faction (right of portrait) ───────────────────────────
-	_name_lbl = Label.new()
-	_name_lbl.position = Vector2(104, 18)
-	_name_lbl.size = Vector2(PANEL_WIDTH - 112, 32)
-	_name_lbl.add_theme_font_size_override("font_size", 18)
-	_name_lbl.add_theme_color_override("font_color", Color(0.92, 0.85, 0.60))
-	_name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	add_child(_name_lbl)
-
-	_faction_lbl = Label.new()
-	_faction_lbl.position = Vector2(104, 52)
-	_faction_lbl.size = Vector2(PANEL_WIDTH - 112, 20)
-	_faction_lbl.add_theme_font_size_override("font_size", 11)
-	add_child(_faction_lbl)
-
-	# ── HP section ───────────────────────────────────────────────────
-	var hp_title := _make_section_label("HIT POINTS", Vector2(14, 106))
-	add_child(hp_title)
+	var hp_title := Label.new()
+	hp_title.text = "HIT POINTS"
+	hp_title.add_theme_font_size_override("font_size", 10)
+	hp_title.add_theme_color_override("font_color", Color(0.40, 0.45, 0.60))
+	header.add_child(hp_title)
 
 	_hp_lbl = Label.new()
-	_hp_lbl.position = Vector2(14, 120)
-	_hp_lbl.size = Vector2(PANEL_WIDTH - 28, 18)
-	_hp_lbl.add_theme_font_size_override("font_size", 12)
-	_hp_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
-	add_child(_hp_lbl)
+	_hp_lbl.add_theme_font_size_override("font_size", 11)
+	_hp_lbl.add_theme_color_override("font_color", Color(0.70, 0.70, 0.70))
+	header.add_child(_hp_lbl)
+
+	var bar_wrap := Control.new()
+	bar_wrap.custom_minimum_size = Vector2(0, 10)
+	bar_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(bar_wrap)
 
 	_hp_bar_bg = ColorRect.new()
-	_hp_bar_bg.position = Vector2(14, 140)
-	_hp_bar_bg.size = Vector2(PANEL_WIDTH - 28, 10)
+	_hp_bar_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_hp_bar_bg.color = Color(0.15, 0.15, 0.18)
-	add_child(_hp_bar_bg)
+	bar_wrap.add_child(_hp_bar_bg)
 
 	_hp_bar_fill = ColorRect.new()
-	_hp_bar_fill.position = Vector2(14, 140)
-	_hp_bar_fill.size = Vector2(PANEL_WIDTH - 28, 10)
+	_hp_bar_fill.set_anchor(SIDE_LEFT,   0.0)
+	_hp_bar_fill.set_anchor(SIDE_TOP,    0.0)
+	_hp_bar_fill.set_anchor(SIDE_BOTTOM, 1.0)
+	_hp_bar_fill.set_anchor(SIDE_RIGHT,  1.0)
 	_hp_bar_fill.color = Color(0.15, 0.80, 0.30)
-	add_child(_hp_bar_fill)
+	bar_wrap.add_child(_hp_bar_fill)
 
-	# HP bar border
-	var hpborder := _make_border(Rect2(13, 139, PANEL_WIDTH - 26, 12), Color(0.25, 0.25, 0.30))
-	add_child(hpborder)
+	# Divider between header and scroll
+	var div := ColorRect.new()
+	div.custom_minimum_size = Vector2(0, 1)
+	div.color = Color(0.22, 0.22, 0.30)
+	root.add_child(div)
 
-	# ── Divider ──────────────────────────────────────────────────────
-	_divider = ColorRect.new()
-	_divider.position = Vector2(14, 162)
-	_divider.size = Vector2(PANEL_WIDTH - 28, 1)
-	_divider.color = Color(0.22, 0.22, 0.30)
-	add_child(_divider)
+	# Scroll area fills all remaining space
+	_scroll = ScrollContainer.new()
+	_scroll.size_flags_vertical   = Control.SIZE_EXPAND_FILL
+	_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(_scroll)
 
-	# ── Combat stats grid ────────────────────────────────────────────
-	var stats_title := _make_section_label("COMBAT STATS", Vector2(14, 172))
-	add_child(stats_title)
-
-	_stats_grid = GridContainer.new()
-	_stats_grid.columns = 2
-	_stats_grid.position = Vector2(14, 190)
-	_stats_grid.size = Vector2(PANEL_WIDTH - 28, 0)
-	_stats_grid.add_theme_constant_override("h_separation", 8)
-	_stats_grid.add_theme_constant_override("v_separation", 6)
-	add_child(_stats_grid)
-
-	# ── Divider 2 ────────────────────────────────────────────────────
-	var div2 := ColorRect.new()
-	div2.position = Vector2(14, 290)
-	div2.size = Vector2(PANEL_WIDTH - 28, 1)
-	div2.color = Color(0.22, 0.22, 0.30)
-	add_child(div2)
-
-	# ── Terrain costs grid ───────────────────────────────────────────
-	_terrain_title = _make_section_label("TERRAIN COSTS", Vector2(14, 300))
-	add_child(_terrain_title)
-
-	_terrain_grid = GridContainer.new()
-	_terrain_grid.columns = 2
-	_terrain_grid.position = Vector2(14, 318)
-	_terrain_grid.size = Vector2(PANEL_WIDTH - 28, 0)
-	_terrain_grid.add_theme_constant_override("h_separation", 8)
-	_terrain_grid.add_theme_constant_override("v_separation", 6)
-	add_child(_terrain_grid)
-
-	# ── Status strip at bottom ───────────────────────────────────────
-	var status_bg := ColorRect.new()
-	status_bg.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	status_bg.size = Vector2(0, 32)
-	status_bg.color = Color(0.04, 0.04, 0.07)
-	add_child(status_bg)
+	_content = VBoxContainer.new()
+	_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_content.add_theme_constant_override("separation", 2)
+	_scroll.add_child(_content)
 
 
 # ════════════════════════════════════════════════════════════════════
 # Public API
 # ════════════════════════════════════════════════════════════════════
 
-## Populate and show the panel for the given unit.
 func show_unit(unit: BaseUnit) -> void:
 	_unit = unit
 	_populate(unit)
 	visible = true
-	# Re-pin size in case viewport changed
-	var vp := get_viewport_rect()
-	size = Vector2(PANEL_WIDTH, vp.size.y)
-	position = Vector2(vp.size.x - PANEL_WIDTH, 0)
 
 
-## Hide the panel without destroying it.
 func hide_panel() -> void:
 	visible = false
 	_unit = null
 
 
-## Refresh displayed data (call after take_damage / reset_turn).
 func refresh() -> void:
 	if _unit != null and visible:
 		_populate(_unit)
@@ -222,92 +190,245 @@ func refresh() -> void:
 # ════════════════════════════════════════════════════════════════════
 
 func _populate(unit: BaseUnit) -> void:
-	# ── Portrait ─────────────────────────────────────────────────────
 	var type_name := UnitData.get_unit_name(unit.unit_type).to_lower()
 	var path := "res://assets/units/%s.png" % type_name
-	if ResourceLoader.exists(path):
-		_portrait.texture = load(path)
-	else:
-		_portrait.texture = null
+	_portrait.texture = load(path) if ResourceLoader.exists(path) else null
 
-	# ── Portrait + badge bg tint by faction ──────────────────────────
 	if unit.faction == UnitData.Faction.PLAYER:
-		_portrait_bg.color = Color(0.08, 0.10, 0.20)
+		_portrait.modulate = Color(0.85, 0.95, 1.0)
 		_faction_lbl.text  = "▲  PLAYER"
 		_faction_lbl.add_theme_color_override("font_color", Color(0.40, 0.65, 1.0))
 	else:
-		_portrait_bg.color = Color(0.20, 0.08, 0.08)
+		_portrait.modulate = Color(1.0, 0.85, 0.85)
 		_faction_lbl.text  = "▼  ENEMY"
 		_faction_lbl.add_theme_color_override("font_color", Color(1.0, 0.35, 0.35))
 
-	# ── Name ─────────────────────────────────────────────────────────
 	_name_lbl.text = unit.unit_name
 
-	# ── HP bar ───────────────────────────────────────────────────────
 	var ratio: float = float(unit.hp) / float(unit.hp_max)
 	_hp_lbl.text = "%d / %d" % [unit.hp, unit.hp_max]
-	var bar_max_w: float = PANEL_WIDTH - 28.0
-	_hp_bar_fill.size.x = bar_max_w * ratio
-	# Colour shifts red→yellow→green
+	_hp_bar_fill.anchor_right = ratio
 	var t := ratio
 	_hp_bar_fill.color = Color(1.0 - t, t * 0.85, 0.0).lerp(Color(0.10, 0.85, 0.25), t * 0.6)
 
-	# ── Combat stats ─────────────────────────────────────────────────
-	for child in _stats_grid.get_children():
+	for child in _content.get_children():
 		child.queue_free()
 
-	var stats: Array = [
-		["⚔  Attack",    str(unit.attack)],
-		["🏃 Move range", str(unit.move_range)],
-		["👣 Moves left", str(unit.moves_left)],
-		["🗡 Has attacked", "Yes" if unit.has_attacked else "No"],
-		["📍 Position",   "(%d, %d)" % [unit.hex_pos.x, unit.hex_pos.y]],
-	]
-	for row in stats:
-		var key_lbl := _make_key_label(row[0])
-		var val_lbl := _make_val_label(row[1])
-		_stats_grid.add_child(key_lbl)
-		_stats_grid.add_child(val_lbl)
+	_add_weapons_section(unit)
+	_add_divider()
+	_add_protection_section(unit)
+	_add_divider()
+	_add_steed_section(unit)
+	_add_divider()
+	_add_combat_stats_section(unit)
+	_add_divider()
+	_add_terrain_section(unit)
 
-	# ── Terrain costs ─────────────────────────────────────────────────
-	for child in _terrain_grid.get_children():
-		child.queue_free()
 
-	var costs: Dictionary = UnitData.UNITS[unit.unit_type]["base_costs"]
+# ════════════════════════════════════════════════════════════════════
+# Sections
+# ════════════════════════════════════════════════════════════════════
+
+func _add_weapons_section(unit: BaseUnit) -> void:
+	_content.add_child(_section_title("⚔  WEAPONS"))
+
+	var pw: Dictionary = EquipmentData.WEAPONS[unit.primary_weapon]
+	var sw: Dictionary = EquipmentData.WEAPONS[unit.secondary_weapon]
+	var is_primary_active := unit.active_weapon == BaseUnit.WeaponSlot.PRIMARY
+
+	var p_label := "▶ PRIMARY" if is_primary_active else "   PRIMARY"
+	var p_color := Color(0.95, 0.85, 0.30) if is_primary_active else Color(0.50, 0.50, 0.55)
+	_content.add_child(_weapon_row(p_label, pw, p_color))
+
+	var s_label := "▶ SECONDARY" if not is_primary_active else "   SECONDARY"
+	var s_color := Color(0.95, 0.85, 0.30) if not is_primary_active else Color(0.50, 0.50, 0.55)
+	_content.add_child(_weapon_row(s_label, sw, s_color))
+
+
+func _weapon_row(slot_label: String, wpn: Dictionary, label_color: Color) -> Control:
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 1)
+
+	var slot_lbl := Label.new()
+	slot_lbl.text = slot_label
+	slot_lbl.add_theme_font_size_override("font_size", 10)
+	slot_lbl.add_theme_color_override("font_color", label_color)
+	vb.add_child(slot_lbl)
+
+	var name_lbl := Label.new()
+	name_lbl.text = "    %s" % wpn["name"]
+	name_lbl.add_theme_font_size_override("font_size", 13)
+	name_lbl.add_theme_color_override("font_color", Color(0.88, 0.85, 0.78))
+	vb.add_child(name_lbl)
+
+	var range_str := "Melee (range 1)" if wpn["attack_range"] <= 1 \
+				   else "Ranged (range %d)" % wpn["attack_range"]
+	var kind_str := ""
+	if wpn["projectile_kind"] >= 0:
+		kind_str = "  •  " + ("Arrow" if wpn["projectile_kind"] == ProjectileData.Kind.ARROW else "Arc")
+
+	var stats_lbl := Label.new()
+	stats_lbl.text = "    DMG %d  •  %s%s" % [wpn["damage"], range_str, kind_str]
+	stats_lbl.add_theme_font_size_override("font_size", 11)
+	stats_lbl.add_theme_color_override("font_color", Color(0.60, 0.70, 0.60))
+	vb.add_child(stats_lbl)
+
+	var desc_lbl := Label.new()
+	desc_lbl.text = "    %s" % wpn["description"]
+	desc_lbl.add_theme_font_size_override("font_size", 10)
+	desc_lbl.add_theme_color_override("font_color", Color(0.38, 0.38, 0.42))
+	desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc_lbl.custom_minimum_size = Vector2(PANEL_WIDTH - 20, 0)
+	vb.add_child(desc_lbl)
+
+	var pad := Control.new()
+	pad.custom_minimum_size = Vector2(0, 4)
+	vb.add_child(pad)
+
+	return vb
+
+
+func _add_protection_section(unit: BaseUnit) -> void:
+	_content.add_child(_section_title("🛡  PROTECTION"))
+
+	var a_info: Dictionary = EquipmentData.ARMORS[unit.armor]
+	var h_info: Dictionary = EquipmentData.HELMETS[unit.helmet]
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 4)
+	_content.add_child(grid)
+
+	_grid_row(grid, "Armor",  "%s  (−%d)" % [a_info["name"], a_info["damage_reduction"]])
+	_grid_row(grid, "Helmet", "%s  (−%d)" % [h_info["name"], h_info["damage_reduction"]])
+
+	var total_lbl_k := _make_key_label("Total reduction")
+	var total_lbl_v := _make_val_label("-%d per hit" % unit.protection)
+	if unit.protection == 0:
+		total_lbl_v.add_theme_color_override("font_color", Color(0.60, 0.30, 0.30))
+	else:
+		total_lbl_v.add_theme_color_override("font_color", Color(0.35, 0.85, 0.50))
+	grid.add_child(total_lbl_k)
+	grid.add_child(total_lbl_v)
+
+	var note := Label.new()
+	note.text = "  Min 1 damage always dealt."
+	note.add_theme_font_size_override("font_size", 10)
+	note.add_theme_color_override("font_color", Color(0.35, 0.35, 0.40))
+	_content.add_child(note)
+
+
+func _add_steed_section(unit: BaseUnit) -> void:
+	_content.add_child(_section_title("🐎  MOUNT"))
+
+	var s_info: Dictionary = EquipmentData.STEEDS[unit.steed]
+	var mounted := unit.steed != EquipmentData.SteedType.NONE
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 4)
+	_content.add_child(grid)
+
+	_grid_row(grid, "Mount", s_info["name"])
+
+	if mounted:
+		_grid_row(grid, "Move range", str(s_info["move_range"]) + " (mounted)")
+		_grid_row(grid, "Foot range", str(UnitData.UNITS[unit.unit_type]["move_range"]) + " (dismounted)")
+		var note := Label.new()
+		note.text = "  " + s_info["description"]
+		note.add_theme_font_size_override("font_size", 10)
+		note.add_theme_color_override("font_color", Color(0.70, 0.65, 0.30))
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		note.custom_minimum_size = Vector2(PANEL_WIDTH - 20, 0)
+		_content.add_child(note)
+	else:
+		_grid_row(grid, "Move range", str(UnitData.UNITS[unit.unit_type]["move_range"]) + " (on foot)")
+
+
+func _add_combat_stats_section(unit: BaseUnit) -> void:
+	_content.add_child(_section_title("📊  TURN STATE"))
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 4)
+	_content.add_child(grid)
+
+	var slot_name := "Primary" if unit.active_weapon == BaseUnit.WeaponSlot.PRIMARY else "Secondary"
+	_grid_row(grid, "Active weapon", slot_name)
+	_grid_row(grid, "Attack damage", str(unit.attack))
+	_grid_row(grid, "Attack range",  str(unit.attack_range))
+	_grid_row(grid, "Moves left",    str(unit.moves_left) + " / " + str(unit.move_range))
+	_grid_row(grid, "Has attacked",  "Yes" if unit.has_attacked else "No")
+	_grid_row(grid, "Position",      "(%d, %d)" % [unit.hex_pos.x, unit.hex_pos.y])
+
+
+func _add_terrain_section(unit: BaseUnit) -> void:
+	var mounted := unit.steed != EquipmentData.SteedType.NONE
+	var title := "🗺  TERRAIN COSTS" + (" (mounted)" if mounted else " (on foot)")
+	_content.add_child(_section_title(title))
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 4)
+	_content.add_child(grid)
+
 	var terrain_names := ["Flat", "Hilly", "Mountain", "Water"]
 	var terrain_icons := ["🌿", "⛰", "🗻", "🌊"]
-	for i in costs.size():
-		var cost_val: int = costs[i]
-		var label_txt := "%s %s" % [terrain_icons[i], terrain_names[i]]
-		var cost_txt  := "∞" if cost_val >= 99 else str(cost_val)
-		var key_lbl := _make_key_label(label_txt)
-		var val_lbl := _make_val_label(cost_txt)
-		if cost_val >= 99:
+	var dummy_cell := TerrainData.HexCell.new()
+
+	for i in range(4):
+		dummy_cell.base    = i as TerrainData.Base
+		dummy_cell.overlay = TerrainData.Overlay.NONE
+		var cost: int = unit.terrain_cost(dummy_cell)
+
+		var key_lbl := _make_key_label("%s %s" % [terrain_icons[i], terrain_names[i]])
+		var val_lbl := _make_val_label("inf" if cost >= 99 else str(cost))
+		if cost >= 99:
 			val_lbl.add_theme_color_override("font_color", Color(0.80, 0.25, 0.25))
-		elif cost_val == 1:
+		elif cost == 1:
 			val_lbl.add_theme_color_override("font_color", Color(0.35, 0.85, 0.40))
 		else:
 			val_lbl.add_theme_color_override("font_color", Color(0.90, 0.75, 0.25))
-		_terrain_grid.add_child(key_lbl)
-		_terrain_grid.add_child(val_lbl)
+		grid.add_child(key_lbl)
+		grid.add_child(val_lbl)
 
 
 # ════════════════════════════════════════════════════════════════════
 # Widget helpers
 # ════════════════════════════════════════════════════════════════════
 
-func _make_section_label(txt: String, pos: Vector2) -> Label:
+func _section_title(txt: String) -> Control:
+	var vb := VBoxContainer.new()
+	var pad := Control.new()
+	pad.custom_minimum_size = Vector2(0, 6)
+	vb.add_child(pad)
 	var lbl := Label.new()
 	lbl.text = txt
-	lbl.position = pos
 	lbl.add_theme_font_size_override("font_size", 10)
 	lbl.add_theme_color_override("font_color", Color(0.40, 0.45, 0.60))
-	return lbl
+	vb.add_child(lbl)
+	return vb
+
+
+func _add_divider() -> void:
+	var div := ColorRect.new()
+	div.custom_minimum_size = Vector2(PANEL_WIDTH - 28, 1)
+	div.color = Color(0.20, 0.20, 0.28)
+	_content.add_child(div)
+
+
+func _grid_row(grid: GridContainer, key: String, val: String) -> void:
+	grid.add_child(_make_key_label(key))
+	grid.add_child(_make_val_label(val))
 
 
 func _make_key_label(txt: String) -> Label:
 	var lbl := Label.new()
-	lbl.text = txt
+	lbl.text = "  " + txt
 	lbl.add_theme_font_size_override("font_size", 12)
 	lbl.add_theme_color_override("font_color", Color(0.55, 0.58, 0.65))
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -322,20 +443,3 @@ func _make_val_label(txt: String) -> Label:
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	return lbl
-
-
-func _make_border(rect: Rect2, color: Color) -> Control:
-	# Thin 1-px border drawn as a ColorRect with draw_rect would need a
-	# CanvasItem subclass; simplest approach is a NinePatchRect-free border
-	# via a transparent ColorRect on top — we use a Panel instead.
-	var p := Panel.new()
-	p.position = rect.position
-	p.size = rect.size
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0)
-	sb.border_color = color
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(0)
-	p.add_theme_stylebox_override("panel", sb)
-	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return p

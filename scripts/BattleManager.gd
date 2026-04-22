@@ -165,8 +165,10 @@ func _plan_enemy_action(enemy: BaseUnit, claimed: Dictionary) -> Dictionary:
 		return { "unit": enemy, "origin": enemy.hex_pos,
 				 "path": [], "move_to": enemy.hex_pos, "attack": null }
 
-	var atk_range: int = UnitData.get_attack_range(enemy.unit_type)
-	var kind: int      = UnitData.get_projectile_kind(enemy.unit_type)
+	var atk_range: int = enemy.attack_range
+	var kind: int      = EquipmentData.WEAPONS[
+		enemy.primary_weapon if enemy.active_weapon == BaseUnit.WeaponSlot.PRIMARY
+		else enemy.secondary_weapon]["projectile_kind"]
 	var dist: int      = HexGrid.distance(enemy.hex_pos, target.hex_pos)
 
 	# Already in attack range → stay and attack
@@ -184,7 +186,7 @@ func _plan_enemy_action(enemy: BaseUnit, claimed: Dictionary) -> Dictionary:
 	var cost_fn: Callable = func(hex: Vector2i) -> int:
 		if not terrain_map.has(hex):
 			return 99
-		var base_cost: int = UnitData.move_cost(enemy.unit_type, terrain_map[hex])
+		var base_cost: int = enemy.terrain_cost(terrain_map[hex])
 		if base_cost >= 99:
 			return 99
 		if hex == target.hex_pos:
@@ -210,8 +212,7 @@ func _plan_enemy_action(enemy: BaseUnit, claimed: Dictionary) -> Dictionary:
 	for step_hex in full_path:
 		if step_hex == target.hex_pos:
 			break
-		var t_cost: int = UnitData.move_cost(enemy.unit_type,
-			terrain_map.get(step_hex, TerrainData.HexCell.new()))
+		var t_cost: int = enemy.terrain_cost(terrain_map.get(step_hex, TerrainData.HexCell.new()))
 		if t_cost >= 99:
 			break
 		if spent + t_cost > enemy.move_range:
@@ -437,7 +438,7 @@ func handle_hex_click(hex: Vector2i) -> void:
 			_do_attack(selected_unit, clicked_unit)
 			return
 		# Ranged unit clicking an attackable hex with no enemy — fire anyway (miss)
-		if UnitData.get_attack_range(selected_unit.unit_type) > 1 and not selected_unit.has_attacked:
+		if selected_unit.attack_range > 1 and not selected_unit.has_attacked:
 			_do_ranged_attack_at(selected_unit, hex)
 			return
 
@@ -481,13 +482,13 @@ func _do_move(u: BaseUnit, target_hex: Vector2i) -> void:
 		func() -> void: _select_unit(u))
 
 
-func _cost_fn(unit_type: UnitData.Type) -> Callable:
+func _cost_fn(unit: BaseUnit) -> Callable:
 	return func(hex: Vector2i) -> int:
 		if not terrain_map.has(hex):
 			return 99
 		if _unit_at(hex) != null:
 			return 99
-		return UnitData.move_cost(unit_type, terrain_map[hex])
+		return unit.terrain_cost(terrain_map[hex])
 
 
 func _highlight_for(u: BaseUnit) -> void:
@@ -496,15 +497,17 @@ func _highlight_for(u: BaseUnit) -> void:
 
 	if u.moves_left > 0:
 		reachable_hexes = HexGrid.reachable_weighted(
-			u.hex_pos, u.moves_left, _cost_fn(u.unit_type))
+			u.hex_pos, u.moves_left, _cost_fn(u))
 		reachable_hexes.erase(u.hex_pos)
 		for hex in reachable_hexes:
 			if tiles.has(hex):
 				tiles[hex].set_reachable(true)
 
 	if not u.has_attacked:
-		var atk_range: int = UnitData.get_attack_range(u.unit_type)
-		var kind: int      = UnitData.get_projectile_kind(u.unit_type)
+		var atk_range: int = u.attack_range
+		var kind: int      = EquipmentData.WEAPONS[
+			u.primary_weapon if u.active_weapon == BaseUnit.WeaponSlot.PRIMARY
+			else u.secondary_weapon]["projectile_kind"]
 
 		if atk_range <= 1:
 			# Melee — only adjacent enemies
@@ -547,8 +550,8 @@ func _do_attack(attacker: BaseUnit, defender: BaseUnit) -> void:
 		_set_status("%s already attacked this turn!" % attacker.unit_name)
 		return
  
-	var atk_range: int = UnitData.get_attack_range(attacker.unit_type)
- 
+	var atk_range: int = attacker.attack_range
+
 	if atk_range <= 1:
 		# Melee — instant
 		attacker.has_attacked = true
@@ -576,7 +579,9 @@ func _do_ranged_attack_at(attacker: BaseUnit, target_hex: Vector2i) -> void:
 	attacker.has_attacked = true
 	_clear_highlights()
  
-	var kind: int = UnitData.get_projectile_kind(attacker.unit_type)
+	var kind: int      = EquipmentData.WEAPONS[
+		attacker.primary_weapon if attacker.active_weapon == BaseUnit.WeaponSlot.PRIMARY
+		else attacker.secondary_weapon]["projectile_kind"]
 	var landed_hex: Vector2i
  
 	if kind == ProjectileData.Kind.ARC:
@@ -607,7 +612,9 @@ func _do_ranged_attack_at(attacker: BaseUnit, target_hex: Vector2i) -> void:
 
 ## Variant used by AI: fire_origin can differ from attacker.hex_pos (phantom attacks)
 func _do_ranged_attack_at_from(attacker: BaseUnit, target_hex: Vector2i, fire_origin: Vector2i) -> void:
-	var kind: int = UnitData.get_projectile_kind(attacker.unit_type)
+	var kind: int = EquipmentData.WEAPONS[
+		attacker.primary_weapon if attacker.active_weapon == BaseUnit.WeaponSlot.PRIMARY
+		else attacker.secondary_weapon]["projectile_kind"]
 	var landed_hex: Vector2i
 	if kind == ProjectileData.Kind.ARC:
 		landed_hex = target_hex
@@ -697,8 +704,7 @@ func _execute_intent(enemy: BaseUnit, intent: Dictionary) -> void:
 					break   # blocked earlier on path, stop here
 
 	if actual_dest != enemy.hex_pos:
-		var cost: int = UnitData.move_cost(enemy.unit_type,
-			terrain_map.get(actual_dest, TerrainData.HexCell.new()))
+		var cost: int = enemy.terrain_cost(terrain_map.get(actual_dest, TerrainData.HexCell.new()))
 		enemy.move_to(actual_dest, HEX_SIZE, cost)
 		_apply_unit_z(enemy, actual_dest)
 
@@ -711,8 +717,10 @@ func _execute_intent(enemy: BaseUnit, intent: Dictionary) -> void:
 				return
 			if defender.faction != UnitData.Faction.PLAYER:
 				return
-			var atk_range: int  = UnitData.get_attack_range(enemy.unit_type)
-			var kind: int       = UnitData.get_projectile_kind(enemy.unit_type)
+			var atk_range: int  = enemy.attack_range
+			var kind: int       = EquipmentData.WEAPONS[
+				enemy.primary_weapon if enemy.active_weapon == BaseUnit.WeaponSlot.PRIMARY
+				else enemy.secondary_weapon]["projectile_kind"]
 			var actual_dist: int = HexGrid.distance(enemy.hex_pos, atk_hex)
 			var origin_dist: int = HexGrid.distance(intent["origin"], atk_hex)
 			# Fire from actual position if in range, else phantom-fire from origin
@@ -729,7 +737,7 @@ func _ai_attack(enemy: BaseUnit, target: BaseUnit, fire_from: Vector2i = Vector2
 	if not target.is_alive or enemy.has_attacked:
 		return
 	enemy.has_attacked = true
-	var atk_range: int = UnitData.get_attack_range(enemy.unit_type)
+	var atk_range: int = enemy.attack_range
 	if atk_range <= 1:
 		# Melee — instant damage
 		target.take_damage(enemy.attack)

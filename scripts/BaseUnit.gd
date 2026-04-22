@@ -1,45 +1,71 @@
 ## BaseUnit.gd
-## Universal unit node used for both players and enemies.
-## Sprites are loaded from res://assets/units/<type_name>.png
-## HP bar and faction badge are still drawn via _draw() on top.
-## Call `setup(type)` right after add_child() to initialise.
+## Universal unit node for players and enemies.
 ##
-## Right-clicking the unit emits `inspect_requested(unit)` so the
-## parent scene can open a detail panel.
+## EQUIPMENT MODEL
+## ───────────────
+##   primary_weapon   — first weapon slot (determines attack / range / projectile)
+##   secondary_weapon — second weapon slot (alternative attack option)
+##   active_weapon    — which slot is currently selected (PRIMARY or SECONDARY)
+##   armor            — body armour (passive damage reduction)
+##   helmet           — head armour (passive damage reduction)
+##   steed            — mount (overrides move_range and terrain costs when set)
+##
+## DAMAGE
+##   incoming damage = max(1, raw_damage − total_protection)
+##   total_protection = armor.damage_reduction + helmet.damage_reduction
+##
+## MOVEMENT
+##   If a steed is equipped:
+##     move_range  = steed.move_range
+##     base_costs  = steed.base_costs   (overlay costs still use unit's own table)
+##   Otherwise use UnitData defaults.
 
 class_name BaseUnit
 extends Node2D
 
-# ── Identity ─────────────────────────────────────────────────────────
+# ── Identity ──────────────────────────────────────────────────────
 var unit_type: UnitData.Type = UnitData.Type.KNIGHT
-var faction: UnitData.Faction = UnitData.Faction.PLAYER
-
-# ── Stats (populated by setup()) ────────────────────────────────────
-var hp_max: int    = 10
-var hp: int        = 10
-var attack: int    = 3
-var move_range: int = 4
+var faction:   UnitData.Faction = UnitData.Faction.PLAYER
 var unit_name: String = "Unit"
 
-# ── Runtime state ────────────────────────────────────────────────────
-var hex_pos: Vector2i = Vector2i.ZERO
-var moves_left: int   = 0
-var has_attacked: bool = false
-var is_alive: bool = true
+# ── Base stats (from UnitData) ────────────────────────────────────
+var hp_max: int = 10
+var hp: int     = 10
 
-# ── Visuals ──────────────────────────────────────────────────────────
+# ── Equipment ─────────────────────────────────────────────────────
+enum WeaponSlot { PRIMARY, SECONDARY }
+
+var primary_weapon:   EquipmentData.WeaponType = EquipmentData.WeaponType.NONE
+var secondary_weapon: EquipmentData.WeaponType = EquipmentData.WeaponType.NONE
+var active_weapon:    WeaponSlot = WeaponSlot.PRIMARY
+
+var armor:   EquipmentData.ArmorType  = EquipmentData.ArmorType.NONE
+var helmet:  EquipmentData.HelmetType = EquipmentData.HelmetType.NONE
+var steed:   EquipmentData.SteedType  = EquipmentData.SteedType.NONE
+
+# ── Derived combat stats (recomputed by _refresh_stats) ───────────
+var attack:      int = 1   # damage of active weapon
+var attack_range: int = 1  # range of active weapon
+var move_range:   int = 4  # on-foot or steed value
+var protection:   int = 0  # total damage reduction
+
+# ── Runtime state ─────────────────────────────────────────────────
+var hex_pos:     Vector2i = Vector2i.ZERO
+var moves_left:  int      = 0
+var has_attacked: bool    = false
+var is_alive:    bool     = true
+
+# ── Visuals ───────────────────────────────────────────────────────
 var body_color: Color = Color.WHITE
 var trim_color: Color = Color.GRAY
 var _tween: Tween = null
 var _sprite: Sprite2D = null
-
-# ── Sprite size (fits inside the 36px diameter body circle) ──────────
 const SPRITE_SIZE: float = 36.0
 
-# ── Signals ──────────────────────────────────────────────────────────
+# ── Signals ───────────────────────────────────────────────────────
 signal moved(new_hex: Vector2i)
 signal died(unit: BaseUnit)
-signal inspect_requested(unit: BaseUnit)   ## emitted on right-click
+signal inspect_requested(unit: BaseUnit)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -47,21 +73,104 @@ signal inspect_requested(unit: BaseUnit)   ## emitted on right-click
 # ════════════════════════════════════════════════════════════════════
 
 func setup(type: UnitData.Type) -> void:
-	unit_type = type
+	unit_type  = type
 	var info: Dictionary = UnitData.get_info(type)
 	faction    = info["faction"]
 	hp_max     = info["hp_max"]
 	hp         = hp_max
-	attack     = info["attack"]
-	move_range = info["move_range"]
-	moves_left = move_range
 	unit_name  = info["name"]
 	body_color = info["body_color"]
 	trim_color = info["trim_color"]
 
+	# Apply default equipment from UnitData
+	primary_weapon   = info["default_primary"]
+	secondary_weapon = info["default_secondary"]
+	armor            = info["default_armor"]
+	helmet           = info["default_helmet"]
+	steed            = info["default_steed"]
+	active_weapon    = WeaponSlot.PRIMARY
+
+	_refresh_stats()
 	_setup_sprite(type)
 	queue_redraw()
 
+
+## Recompute all derived stats from current equipment.
+func _refresh_stats() -> void:
+	# Active weapon drives attack and range
+	var wpn := _active_weapon_info()
+	attack       = wpn["damage"]
+	attack_range = wpn["attack_range"]
+
+	# Steed drives movement
+	if steed != EquipmentData.SteedType.NONE:
+		move_range = EquipmentData.STEEDS[steed]["move_range"]
+	else:
+		move_range = UnitData.UNITS[unit_type]["move_range"]
+
+	# Armor stacks
+	protection = EquipmentData.total_reduction(armor, helmet)
+
+
+func _active_weapon_info() -> Dictionary:
+	var wpn_type := primary_weapon if active_weapon == WeaponSlot.PRIMARY \
+				  else secondary_weapon
+	return EquipmentData.WEAPONS[wpn_type]
+
+
+## Switch which weapon slot is active. Refreshes stats.
+func switch_weapon() -> void:
+	active_weapon = WeaponSlot.SECONDARY if active_weapon == WeaponSlot.PRIMARY \
+				  else WeaponSlot.PRIMARY
+	_refresh_stats()
+	queue_redraw()
+
+
+## Equip a new item and refresh stats. Call before or between turns.
+func equip_primary(w: EquipmentData.WeaponType) -> void:
+	primary_weapon = w
+	if active_weapon == WeaponSlot.PRIMARY:
+		_refresh_stats()
+
+func equip_secondary(w: EquipmentData.WeaponType) -> void:
+	secondary_weapon = w
+	if active_weapon == WeaponSlot.SECONDARY:
+		_refresh_stats()
+
+func equip_armor(a: EquipmentData.ArmorType) -> void:
+	armor = a
+	_refresh_stats()
+
+func equip_helmet(h: EquipmentData.HelmetType) -> void:
+	helmet = h
+	_refresh_stats()
+
+func equip_steed(s: EquipmentData.SteedType) -> void:
+	steed = s
+	_refresh_stats()
+
+
+# ════════════════════════════════════════════════════════════════════
+# Terrain cost — honours steed if mounted
+# ════════════════════════════════════════════════════════════════════
+
+## Cost for THIS unit to enter `cell`, accounting for its current steed.
+func terrain_cost(cell: TerrainData.HexCell) -> int:
+	if steed != EquipmentData.SteedType.NONE:
+		var steed_costs: Dictionary = EquipmentData.STEEDS[steed]["base_costs"]
+		var bc: int = steed_costs.get(int(cell.base), 99)
+		# Steed base cost; still blocked by walls/buildings (overlay cost from unit)
+		var oc: int = UnitData.UNITS[unit_type]["overlay_costs"].get(int(cell.overlay), 99)
+		if bc >= 99 or oc >= 99:
+			return 99
+		return bc + oc
+	else:
+		return UnitData.move_cost(unit_type, cell)
+
+
+# ════════════════════════════════════════════════════════════════════
+# Sprite
+# ════════════════════════════════════════════════════════════════════
 
 func _setup_sprite(type: UnitData.Type) -> void:
 	if _sprite != null:
@@ -97,7 +206,7 @@ func _refresh_sprite_modulate() -> void:
 
 
 # ════════════════════════════════════════════════════════════════════
-# Input — detect right-click within the unit's radius
+# Input
 # ════════════════════════════════════════════════════════════════════
 
 func _input(event: InputEvent) -> void:
@@ -123,8 +232,10 @@ func reset_turn() -> void:
 	queue_redraw()
 
 
+## Apply incoming damage after subtracting protection. Minimum 1.
 func take_damage(amount: int) -> void:
-	hp = maxi(0, hp - amount)
+	var actual: int = maxi(1, amount - protection)
+	hp = maxi(0, hp - actual)
 	queue_redraw()
 	if hp == 0:
 		is_alive = false
@@ -132,8 +243,7 @@ func take_damage(amount: int) -> void:
 
 
 # ════════════════════════════════════════════════════════════════════
-# Drawing  (body circle + faction badge + HP bar + exhausted X)
-# The sprite child node draws the unit artwork underneath.
+# Drawing
 # ════════════════════════════════════════════════════════════════════
 
 func _draw() -> void:
@@ -143,44 +253,60 @@ func _draw() -> void:
 	var dimmed: bool = (moves_left == 0 and has_attacked)
 	var alpha: float = 0.45 if dimmed else 1.0
 
-	# ── Body circle (background behind sprite) ───────────────────────
+	# Body circle
 	draw_circle(Vector2.ZERO, 18.0, Color(body_color, alpha))
 	draw_arc(Vector2.ZERO, 18.0, 0.0, TAU, 32, Color(trim_color, alpha), 2.5)
 
-	# ── Faction badge (top-right pip) ────────────────────────────────
+	# Steed indicator — small horseshoe arc at bottom when mounted
+	if steed != EquipmentData.SteedType.NONE:
+		var steed_col := Color(0.85, 0.65, 0.10, alpha)
+		draw_arc(Vector2(0, 6), 14.0, deg_to_rad(30), deg_to_rad(150), 12, steed_col, 3.0)
+
+	# Faction badge
 	var badge_col: Color = Color(0.20, 0.50, 1.0, alpha) \
 		if faction == UnitData.Faction.PLAYER \
 		else Color(0.85, 0.20, 0.20, alpha)
 	draw_circle(Vector2(11, -11), 5.0, badge_col)
 	draw_arc(Vector2(11, -11), 5.0, 0.0, TAU, 16, Color(1, 1, 1, alpha * 0.6), 1.0)
 
-	# ── HP bar ───────────────────────────────────────────────────────
-	_draw_hp_bar()
+	# Armor pip — small shield icon bottom-left when armored
+	if protection > 0:
+		var prot_col := Color(0.60, 0.70, 0.85, alpha)
+		var shield := PackedVector2Array([
+			Vector2(-16, 2), Vector2(-11, 2),
+			Vector2(-11, 8), Vector2(-13.5, 11),
+			Vector2(-16, 8),
+		])
+		draw_colored_polygon(shield, prot_col)
 
-	# ── "Exhausted" X overlay ────────────────────────────────────────
+	# HP bar
+	_draw_hp_bar(alpha)
+
+	# Exhausted overlay
 	if dimmed:
 		draw_line(Vector2(-10, -10), Vector2(10, 10), Color(1, 0.2, 0.2, 0.6), 2.0)
 		draw_line(Vector2(10, -10), Vector2(-10, 10), Color(1, 0.2, 0.2, 0.6), 2.0)
 
 
-func _draw_hp_bar() -> void:
+func _draw_hp_bar(alpha: float = 1.0) -> void:
 	const BAR_W: float = 32.0
 	const BAR_H: float = 4.0
 	const BAR_Y: float = 22.0
 	var ratio: float = float(hp) / float(hp_max)
-	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W, BAR_H), Color(0.15, 0.15, 0.15, 0.85))
+	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W, BAR_H), Color(0.15, 0.15, 0.15, 0.85 * alpha))
 	var bar_col := Color(1.0 - ratio, ratio, 0.0).lerp(Color(0.1, 0.9, 0.1), ratio * 0.5)
+	bar_col.a = alpha
 	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W * ratio, BAR_H), bar_col)
-	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W, BAR_H), Color(0, 0, 0, 0.5), false, 0.8)
+	draw_rect(Rect2(-BAR_W * 0.5, BAR_Y, BAR_W, BAR_H), Color(0, 0, 0, 0.5 * alpha), false, 0.8)
 
 
 # ════════════════════════════════════════════════════════════════════
 # Movement
 # ════════════════════════════════════════════════════════════════════
 
-func move_to(new_hex: Vector2i, hex_size: float, terrain_cost: int = 1) -> void:
+func move_to(new_hex: Vector2i, hex_size: float, terrain_cost_val: int = 1) -> void:
 	hex_pos = new_hex
-	moves_left -= terrain_cost
+	moves_left -= terrain_cost_val
 	var target: Vector2 = HexGrid.axial_to_world(new_hex, hex_size)
 
 	if _tween:
