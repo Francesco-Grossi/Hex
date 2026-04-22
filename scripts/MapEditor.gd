@@ -93,24 +93,31 @@ func _save_undo_state() -> void:
 
 ## Reverts units to their previous positions and stats.
 func undo() -> void:
+	# In battle mode, delegate to BattleManager's undo system
+	if _app_mode == AppMode.BATTLE:
+		if _battle != null:
+			if not _battle.undo():
+				_set_status("Nothing to undo.")
+		return
+
 	if _undo_stack.is_empty():
 		_set_status("Nothing to undo.")
 		return
-	
+
 	var last_state = _undo_stack.pop_back()
 	_editor_units.clear()
-	
+
 	for entry in last_state:
 		var u: BaseUnit = entry["unit"]
-		u.hex_pos = entry["pos"]
-		u.hp = entry["hp"]
+		u.hex_pos      = entry["pos"]
+		u.hp           = entry["hp"]
 		u.has_attacked = entry["has_attacked"]
-		u.moves_left = entry["moves_left"]
-		
+		u.moves_left   = entry["moves_left"]
+
 		# Update dictionary and physical position
 		_editor_units[u.hex_pos] = u
 		u.position = HexGrid.axial_to_world(u.hex_pos, HEX_SIZE)
-	
+
 	queue_redraw()
 	_set_status("Undo performed.")
 	

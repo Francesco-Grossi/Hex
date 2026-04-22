@@ -46,6 +46,11 @@ var _pending_attacker: BaseUnit = null
 var _pending_defender: BaseUnit = null
 var _weapon_menu: VBoxContainer = null
 
+# ── Undo ─────────────────────────────────────────────────────────────
+## Each entry: { "positions": {BaseUnit: Vector2i}, "hps": {BaseUnit: int},
+##               "has_attacked": {BaseUnit: bool}, "moves_left": {BaseUnit: int} }
+var _undo_stack: Array = []
+
 
 # ════════════════════════════════════════════════════════════════════
 # Setup
@@ -84,6 +89,58 @@ func start_battle(player_placements: Array = [],
 			all_units.append(u)
 
 	_begin_player_phase()
+
+
+# ════════════════════════════════════════════════════════════════════
+# Undo
+# ════════════════════════════════════════════════════════════════════
+
+## Snapshot all living units before an action.
+func save_undo_state() -> void:
+	var snap := {
+		"positions":    {},
+		"hps":          {},
+		"has_attacked": {},
+		"moves_left":   {},
+	}
+	for u in all_units:
+		if not is_instance_valid(u):
+			continue
+		snap["positions"][u]    = u.hex_pos
+		snap["hps"][u]          = u.hp
+		snap["has_attacked"][u] = u.has_attacked
+		snap["moves_left"][u]   = u.moves_left
+	_undo_stack.append(snap)
+	if _undo_stack.size() > 20:
+		_undo_stack.remove_at(0)
+
+
+## Revert the last action. Returns true if something was undone.
+func undo() -> bool:
+	if _undo_stack.is_empty():
+		return false
+
+	_deselect()
+	_clear_highlights()
+
+	var snap: Dictionary = _undo_stack.pop_back()
+
+	for u: BaseUnit in snap["positions"]:
+		if not is_instance_valid(u):
+			continue
+		var old_hex: Vector2i = snap["positions"][u]
+		u.hex_pos      = old_hex
+		u.hp           = snap["hps"][u]
+		u.has_attacked = snap["has_attacked"][u]
+		u.moves_left   = snap["moves_left"][u]
+		u.is_alive     = u.hp > 0
+		u.visible      = u.is_alive
+		u.position     = HexGrid.axial_to_world(old_hex, HEX_SIZE)
+		_apply_unit_z(u, old_hex)
+		u.queue_redraw()
+
+	_set_status("Undo performed.")
+	return true
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -511,6 +568,7 @@ func handle_hex_click(hex: Vector2i) -> void:
 	
 	if _weapon_menu and is_instance_valid(_weapon_menu.get_parent()):
 		_weapon_menu.get_parent().queue_free()
+		return
 		
 	# 1. ATTACK INTERCEPT: If an enemy is clicked and it's in range of our selected unit
 	if selected_unit != null and clicked_unit != null:
@@ -570,6 +628,7 @@ func _deselect() -> void:
 # ════════════════════════════════════════════════════════════════════
 
 func _do_move(u: BaseUnit, target_hex: Vector2i) -> void:
+	save_undo_state()
 	var cost: int = reachable_hexes.get(target_hex, 0)
 	if tiles.has(u.hex_pos):
 		tiles[u.hex_pos].set_selected(false)
@@ -659,8 +718,15 @@ func _clear_highlights() -> void:
 func _do_attack(attacker: BaseUnit, defender: BaseUnit) -> void:
 	if attacker.has_attacked: return
 	
+	save_undo_state()
+
 	var wpn = _get_active_weapon_info(attacker)
 	var atk_range: int = wpn.get("attack_range", 1)
+
+	# FIX: Clear highlights immediately for ALL attacks.
+	# This prevents the UI button click from falling through 
+	# and tricking the game into thinking you clicked a movement tile!
+	_clear_highlights()
 
 	if atk_range <= 1:
 		# Melee Logic
@@ -670,32 +736,66 @@ func _do_attack(attacker: BaseUnit, defender: BaseUnit) -> void:
 		_set_status("%s hits %s for %d!" % [attacker.unit_name, defender.unit_name, dmg])
 		
 		if wpn.get("push", false):
-			push(attacker, defender)
+			push(attacker.hex_pos, defender)
 			
-		_clear_highlights()
 		_check_game_over()
 	else:
 		# Ranged Logic
 		_do_ranged_attack_at(attacker, defender.hex_pos)
 		
 
-func push(attacker: BaseUnit, target: BaseUnit) -> void:
-	var diff: Vector2i = target.hex_pos - attacker.hex_pos
-	var x: float = float(diff.x)
-	var z: float = float(diff.y)
-	var dist: float = max(abs(x), max(abs(-x-z), abs(z)))
-	
-	if dist == 0.0: return
-	
-	var dir := Vector2i(int(round(x / dist)), int(round(z / dist)))
-	var destination: Vector2i = target.hex_pos + dir
-	
-	if tiles.has(destination) and _unit_at(destination) == null:
-		target.hex_pos = destination
-		var target_pos = HexGrid.axial_to_world(destination, HEX_SIZE)
-		var tween = create_tween()
-		tween.tween_property(target, "position", target_pos, 0.2).set_trans(Tween.TRANS_SINE)
+## Push `target` one hex directly away from `from_hex`.
+## Takes a hex coordinate so there is zero risk of moving the attacker.
+func push(from_hex: Vector2i, target: BaseUnit) -> void:
+	var dq: int = target.hex_pos.x - from_hex.x
+	var dr: int = target.hex_pos.y - from_hex.y
+	if dq == 0 and dr == 0:
+		return   # same hex — nothing to do
 
+	# Use cube coordinates (q, r, s) where s = -q - r.
+	var ds: int = -dq - dr   
+
+	var best_dot:  float           = -INF
+	var best_dirs: Array[Vector2i] = []
+
+	for d in HexGrid.DIRECTIONS:
+		var ddc_q: int = d.x
+		var ddc_r: int = d.y
+		var ddc_s: int = -d.x - d.y
+
+		var diff_mag: float = sqrt(float(dq*dq + dr*dr + ds*ds))
+		var dir_mag:  float = sqrt(float(ddc_q*ddc_q + ddc_r*ddc_r + ddc_s*ddc_s))
+		var dot: float = float(dq*ddc_q + dr*ddc_r + ds*ddc_s) / (diff_mag * dir_mag)
+
+		if dot > best_dot + 0.001:
+			best_dot  = dot
+			best_dirs = [d]
+		elif dot >= best_dot - 0.001:
+			best_dirs.append(d)
+
+	var chosen_dir: Vector2i  = best_dirs[randi() % best_dirs.size()]
+	var destination: Vector2i = target.hex_pos + chosen_dir
+
+	# ─────────────────────────────────────────────────────────────────
+	# UPDATED LOGIC: Move target & shift intent
+	# ─────────────────────────────────────────────────────────────────
+	if tiles.has(destination) and _unit_at(destination) == null:
+		# 1. Clear old visual highlights before changing the data
+		_clear_intent_highlights()
+
+		# 2. Move ONLY the target (Caster remains safely in place)
+		target.hex_pos = destination
+		var target_pos := HexGrid.axial_to_world(destination, HEX_SIZE)
+		var tween := target.create_tween()
+		tween.tween_property(target, "position", target_pos, 0.2).set_trans(Tween.TRANS_SINE)
+		_apply_unit_z(target, destination)
+
+		# 3. Apply the movement vector to the unit's AI intent data
+		_shift_unit_intent(target, chosen_dir)
+		
+		# 4. Re-apply visual highlights and redraw the paths
+		_apply_intent_highlights()
+		_push_overlay()
 # ════════════════════════════════════════════════════════════════════
 # Combat — ranged
 # ════════════════════════════════════════════════════════════════════
@@ -740,24 +840,26 @@ func _do_ranged_attack_at_from(attacker: BaseUnit, target_hex: Vector2i, fire_or
 	# The last argument handles the 'blocked' visual if it hit a wall/unit early
 	proj.fire(from_world, to_world, kind, proj_color, landed_hex if landed_hex != target_hex else Vector2i(-1, -1))
 	
-	var attacker_ref := attacker
-	var landed_ref   := landed_hex
-	
+	var attacker_ref  := attacker
+	var landed_ref    := landed_hex
+	var origin_ref    := fire_origin   # snapshot — never changes after this point
+
 	proj.landed.connect(func(_blocked_hex: Vector2i):
-		_on_projectile_landed(attacker_ref, landed_ref)
+		_on_projectile_landed(attacker_ref, landed_ref, origin_ref)
 	)
 
-func _on_projectile_landed(attacker: BaseUnit, landed_hex: Vector2i) -> void:
+func _on_projectile_landed(attacker: BaseUnit, landed_hex: Vector2i, fire_origin: Vector2i) -> void:
 	var target = _unit_at(landed_hex)
 	var wpn = _get_active_weapon_info(attacker)
-	
+
 	if target and target.faction != attacker.faction:
 		target.take_damage(wpn.get("damage", 0))
-		
-		# THIS IS THE PUSH TRIGGER
+
 		if wpn.get("push", false):
 			_set_status("Wind blast pushes %s!" % target.unit_name)
-			push(attacker, target)
+			# Use fire_origin so direction is correct regardless of
+			# any state changes that happened during projectile flight.
+			push(fire_origin, target)
 
 	_check_game_over()
 	_highlight_for(attacker)
@@ -857,11 +959,31 @@ func _ai_attack(enemy: BaseUnit, target: BaseUnit, fire_from: Vector2i = Vector2
 		_set_status("%s attacks %s for %d!" % [enemy.unit_name, target.unit_name, wpn.get("damage", 1)])
 		
 		if wpn.get("push", false):
-			push(enemy, target)
+			push(enemy.hex_pos, target)
 	else:
 		var origin: Vector2i = fire_from if fire_from != Vector2i(-1, -1) else enemy.hex_pos
 		_do_ranged_attack_at_from(enemy, target.hex_pos, origin)
 
+func _shift_unit_intent(unit: BaseUnit, shift_dir: Vector2i) -> void:
+	for intent in _ai_intents:
+		if intent["unit"] == unit:
+			# Shift the origin
+			intent["origin"] += shift_dir
+			
+			# Shift all waypoints in the path
+			var shifted_path: Array[Vector2i] = []
+			for p in intent["path"]:
+				shifted_path.append(p + shift_dir)
+			intent["path"] = shifted_path
+			
+			# Shift the final destination
+			intent["move_to"] += shift_dir
+			
+			# Shift the attacked tile, if any
+			if intent["attack"] != null:
+				intent["attack"] += shift_dir
+				
+			break # Found our unit, no need to keep looping
 
 func _closest_player(enemy: BaseUnit) -> BaseUnit:
 	var best: BaseUnit = null
